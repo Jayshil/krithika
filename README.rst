@@ -1,4 +1,4 @@
-A fast and versatile light curve fitting tool
+A toolkit for Exoplanets!
 ---------------------------------------------
 
 License
