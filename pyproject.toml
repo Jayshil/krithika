@@ -7,12 +7,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "krithika"
-description = "A fast and versatile light curve fitting tool"
+description = "A toolkit for exoplanets"
 requires-python = ">=3.9"
 readme = { file = "README.rst", content-type = "text/x-rst" }
 license = { file = "licenses/LICENSE.rst" }
 authors = [
-  { name = "Jayshil A. Patel", email = "jayshil.patel@astro.su.se" },
+  { name = "Jayshil A. Patel", email = "jayshilpatel147@gmail.com" },
 ]
 dependencies = []
 dynamic = ["version"]
