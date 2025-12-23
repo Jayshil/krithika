@@ -446,8 +446,58 @@ class julietPlots(object):
 
     
     def phase_folded_lc(self, phmin=0.8, instruments=None, highres=False, nrandom=50, quantile_models=True, one_plot=None, figsize=(16/1.5, 9/1.5), pycheops_binning=False):
-        """This function will plot the phase-folded light curves, by default, one plot for all
-        instruments; however, one can specify list of instruments for which the plot has to be made."""
+        """Plot phase-folded light curves and models for the fitted dataset.
+
+        This method computes detrended data and planetary models by
+        calling ``detrend_data`` and ``detrend_model`` internally, detects
+        whether the fit contains transits, eclipses or phase-curves, and
+        then produces matplotlib figures showing the data, model, and
+        residuals. It can produce either one figure per instrument or a single
+        combined figure with all instruments plotted together.
+
+        Parameters
+        ----------
+        phmin : float, optional
+            Minimum phase value used for generating orbital phase (default
+            ``0.8``).
+        instruments : list or None, optional
+            List of instrument names to plot. If ``None``, all instruments
+            in the juliet dataset (``self.dataset.inames_lc``) are used. One plot
+            is produced if all instruments are provided; otherwise, one plot
+            per instrument is created.
+        highres : bool, optional
+            If ``True``, compute and plot high time-resolution planet-only
+            models. Default ``False``.
+        nrandom : int, optional
+            Number of random posterior-sample models to draw when
+            ``quantile_models`` is ``False``. Default ``50``.
+        quantile_models : bool, optional
+            If ``True``, display the 68%% credible interval as a filled
+            band; if ``False``, overplot ``nrandom`` random posterior
+            samples. Default ``True``.
+        one_plot : bool or None, optional
+            If ``True``, produce a single combined plot for all instruments
+            (regardless of the number of instruments provided). If
+            ``False``, produce one plot per instrument (unless all
+            instruments are provided). If ``None``, the behaviour is as
+            just described. Default ``None``.
+        figsize : tuple, optional
+            Figure size passed to matplotlib when creating figures. Default
+            is ``(16/1.5, 9/1.5)``.
+        pycheops_binning : bool, optional
+            If ``True``, use binning as produced by ``pycheops`` the
+            binned datapoints. If ``False``, it will use default ``juliet``
+            binning. Default ``False``.
+
+        Returns
+        -------
+        If a single combined plot is produced the function returns the
+        combined ``fig`` and the primary axes used. If multiple figures are
+        generated, the function returns lists: ``figs_all, axs1_all,
+        axs2_all, axs3_all, axs4_all`` corresponding to created figures and
+        their axes panels.
+        
+        """
         # -------------------------------------------
         #         Do we want one plot?
         # -------------------------------------------
