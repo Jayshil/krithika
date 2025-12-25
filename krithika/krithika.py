@@ -496,7 +496,7 @@ class julietPlots(object):
         generated, the function returns lists: ``figs_all, axs1_all,
         axs2_all, axs3_all, axs4_all`` corresponding to created figures and
         their axes panels.
-        
+
         """
         # -------------------------------------------
         #         Do we want one plot?
@@ -1039,3 +1039,37 @@ class julietPlots(object):
             return figs_all, axs1_all, axs2_all, axs3_all, axs4_all
         else:
             return fig, ax1, ax2, ax3, ax4
+
+    def plot_fake_allan_deviation(self, instruments=None, binmax=10, method='pipe', timeunit=None):
+
+        # Let's first gather the names of all instruments (we will always do one plot per instrument)
+        if instruments != None:
+            if len(instruments) != len(self.dataset.inames_lc):
+                one_plot = False
+        else:
+            instruments = self.dataset.inames_lc
+
+        ## All stuff we can save
+        figs_all, axs_all = [], []
+        binsize_all, noise_all, white_noise_all = [], [], []
+
+        for ins in range(len(instruments)):
+            # Getting the data
+            tim_ins = self.dataset.times_lc[instruments[ins]][self.idx_time_sort[instruments[ins]]]
+            fl_ins = self.dataset.data_lc[instruments[ins]][self.idx_time_sort[instruments[ins]]]
+
+            ## Median model
+            full_model = self.models_all_ins[instruments[ins]][1][self.idx_time_sort[instruments[ins]]]
+
+            residuals = fl_ins - full_model
+
+            # And, now, let's plot the Allan deviation
+            fig, ax, binsize, noise, white_noise = utils.fake_allan_deviation(times=tim_ins, residuals=residuals, binmax=binmax, method=method, timeunit=timeunit, plot=True)
+
+            figs_all.append(fig)
+            axs_all.append(ax)
+            binsize_all.append(binsize)
+            noise_all.append(noise)
+            white_noise_all.append(white_noise)
+
+        return figs_all, axs_all, binsize_all, noise_all, white_noise_all

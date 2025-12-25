@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from astropy.stats import mad_std
 import astropy.constants as con
 
 def t14(per, ar, rprs, b, ecc=0, omega=90, transit=True):
@@ -138,3 +140,151 @@ def lcbin(time, flux, binwidth=0.06859, nmin=4, time0=None,
 
     j = (n_bin >= nmin)
     return t_bin[j], f_bin[j], e_bin[j], n_bin[j]
+
+def rms(x):
+    return np.sqrt( np.nanmean( (x - np.nanmean(x))**2 ) )
+
+def fake_allan_deviation(times, residuals, binmax=10, method='pipe', timeunit=None, plot=True):
+    """Estimate and optionally plot a noise-vs-bin-size curve (a proxy for Allan deviation).
+
+    The function computes the scatter of binned residuals for a sequence
+    of integer bin sizes and returns both the computed noise (in ppm) and
+    a white-noise expectation for comparison. When ``plot=True`` a
+    log-log figure is produced with a secondary x-axis that maps bin size
+    to a time-unit (days/hours/minutes) according to the total span of
+    ``times``.
+
+    Parameters
+    ----------
+    times : array-like
+        Time stamps of the observations (assumed in days).
+    residuals : array-like
+        Residual fluxes (same length as ``times``).
+    binmax : int, optional
+        Parameter controlling the maximum number of bins. The function
+        will evaluate binsizes from 1..int(len(times)/binmax). Default 10.
+    method : {'pipe', 'std', 'rms', 'astropy'}, optional
+        Method used to estimate the scatter of the binned residuals:
+        - 'pipe' : use ``pipe_mad`` (median absolute differences estimator)
+        - 'std'  : use ``np.nanstd``
+        - 'rms'  : use the root-mean-square (``rms`` helper)
+        - 'astropy' : use ``astropy.stats.mad_std`` (robust MAD-based std)
+    timeunit : {'d', 'hr', 'min'}, optional
+        If provided, forces the time unit used in the secondary x-axis
+        to days ('d'), hours ('hr'), or minutes ('min'). By default the
+        function selects the most appropriate unit based on the total
+        span of ``times``.
+    plot : bool, optional
+        If ``True`` (default), create and display a matplotlib figure with
+        the computed noise curve and the white-noise expectation.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure or None
+        The created figure if ``plot=True``, otherwise ``None``.
+    axs : matplotlib.axes.Axes or None
+        The axes object for the figure if ``plot=True``, otherwise ``None``.
+    binsize : ndarray
+        Integer array of evaluated bin sizes.
+    noise_ppm : ndarray
+        Computed scatter of binned residuals converted to parts-per-million
+        (ppm), corresponding to ``binsize``.
+    white_noise_expec : ndarray
+        White-noise expectation (ppm) computed as
+        ``noise_func(residuals) / sqrt(binsize)`` (with a small-sample
+        correction applied). Values for ``binsize==0`` will be ``inf`` or
+        undefined.
+    """
+
+    # Computing bin-size
+    binsize = np.arange(1, int(len(times)/binmax), 1)
+    # Array to save noise
+    noise = np.zeros( len(binsize) )
+    # Number of data points in each bin
+    nbin = np.zeros( len(binsize) )
+
+    # Choosing the method to compute noise
+    if method == 'pipe':
+        noise_func = pipe_mad
+    elif method == 'std':
+        noise_func = np.nanstd
+    elif method == 'rms':
+        noise_func = rms
+    elif method == 'astropy':
+        noise_func = lambda x: mad_std(x, ignore_nan=True)
+    else:
+        raise ValueError("Method should be one of 'pipe', 'std', 'rms', or 'astropy'.")
+
+    # Computing binning for each binsize, and then computing the stddev of the binned residuals
+    for i in range(len(binsize)):
+        _, binned_flux, _, _ = lcbin(time=times, flux=residuals, nmin=1, binwidth=binsize[i] * np.nanmedian(np.diff(times)) )
+    
+        noise[i] = noise_func(binned_flux)
+        nbin[i] = int( np.floor( len(residuals) / binsize[i] ) )
+
+    # Converting binsize to time units
+    time_binsize = binsize * np.nanmedian( np.diff(times) )
+
+    # First, let's estimate the time units we need from times array:
+    if timeunit is None:
+        if np.ptp(time_binsize) >= 1.:
+            ## If times duration is greater than 2 hours, we use days
+            time_unit_multiplication_factor = 1.     # Units are already in days
+            time_unit_label = 'Time period [d]'
+        elif ( np.ptp(time_binsize) > 5/24 ) and ( np.ptp(time_binsize) < 1. ):
+            ## If times duration is greater than 2 hours, but less than 2 days, we use hours
+            time_unit_multiplication_factor = 24.    # Converting days to hours
+            time_unit_label = 'Time period [hr]'
+        else:
+            ## If times duration is less than 2 hours, we use minutes
+            time_unit_multiplication_factor = 24 * 60
+            time_unit_label = 'Time period [min]'
+    else:
+        if timeunit == 'd':
+            time_unit_multiplication_factor = 1.
+            time_unit_label = 'Time period [d]'
+        elif timeunit == 'hr':
+            time_unit_multiplication_factor = 24.
+            time_unit_label = 'Time period [hr]'
+        elif timeunit == 'min':
+            time_unit_multiplication_factor = 24 * 60
+            time_unit_label = 'Time period [min]'
+        else:
+            raise ValueError("timeunit should be one of 'd', 'hr', or 'min'.")
+    
+    # The following two functions will convert binsize to time (in minutes) and vice versa
+    def bin2time(binsize):
+        return binsize * np.nanmedian(np.diff(times)) * time_unit_multiplication_factor
+
+    def time2bin(bintime):
+        return bintime / ( np.nanmedian(np.diff(times)) * time_unit_multiplication_factor )
+    
+    # Computing the white-noise expectation
+    white_noise_expec = noise_func(residuals)/np.sqrt(binsize) * 1e6 * np.sqrt(nbin / (nbin - 1.))
+    
+    if plot:
+        # ----------------------------------
+        #  And generating the plot
+        # ----------------------------------
+        fig, axs = plt.subplots()
+        
+        ## First plotting the computed noise
+        axs.plot(binsize, noise * 1e6, color='dodgerblue', lw=1., label='Computed noise', zorder=10)
+        ## Now plotting the white-noise expectation
+        axs.plot(binsize, white_noise_expec, color='orangered', label='White-noise expectation')
+
+        ## Adding secondary x-axis for time
+        secax = axs.secondary_xaxis('top', functions=(bin2time, time2bin))
+        secax.set_xlabel(time_unit_label, labelpad=10)
+
+        axs.set_xscale('log')
+        axs.set_yscale('log')
+
+        axs.set_xlabel('Bin size [Number of points]')
+        axs.set_ylabel('Noise estimate [ppm]')
+
+        axs.legend()
+    else:
+        fig, axs = None, None
+
+    return fig, axs, binsize, noise*1e6, white_noise_expec
