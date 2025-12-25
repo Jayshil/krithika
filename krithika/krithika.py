@@ -1041,6 +1041,46 @@ class julietPlots(object):
             return fig, ax1, ax2, ax3, ax4
 
     def plot_fake_allan_deviation(self, instruments=None, binmax=10, method='pipe', timeunit=None):
+        """Compute and plot per-instrument noise-vs-bin-size curves.
+
+        This is a thin wrapper around ``utils.fake_allan_deviation`` that
+        computes residuals for each instrument (data minus the full model)
+        and returns the figures, axes and numeric results for further use.
+
+        Parameters
+        ----------
+        instruments : list or None
+            List of instrument names to include. If ``None``, all
+            instruments in the juliet dataset (``self.dataset.inames_lc``)
+            are processed.
+        binmax : int, optional
+            Passed to ``utils.fake_allan_deviation`` to control the maximum
+            number of bins (default ``10``).
+        method : {'pipe','std','rms','astropy'}, optional
+            Method used to estimate the scatter of the binned residuals:
+            - 'pipe' : use ``pipe_mad`` (median absolute differences estimator)
+            - 'std'  : use ``np.nanstd``
+            - 'rms'  : use the root-mean-square (``rms`` helper)
+            - 'astropy' : use ``astropy.stats.mad_std`` (robust MAD-based std)
+        timeunit : str or None, optional
+            If provided, forwarded to ``utils.fake_allan_deviation`` to
+            force the secondary x-axis time unit; otherwise the helper
+            chooses an appropriate unit automatically.
+
+        Returns
+        -------
+        figs_all : list
+            List of matplotlib Figure objects (one per instrument).
+        axs_all : list
+            List of matplotlib Axes objects corresponding to the figures.
+        binsize_all : list
+            List of binsize arrays returned for each instrument.
+        noise_all : list
+            List of noise arrays (ppm) computed for each instrument.
+        white_noise_all : list
+            List of white-noise expectation arrays (ppm) for each
+            instrument.
+        """
 
         # Let's first gather the names of all instruments (we will always do one plot per instrument)
         if instruments != None:
