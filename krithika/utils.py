@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.stats import mad_std
+from astropy.timeseries import LombScargle
 import astropy.constants as con
+import astropy.units as u
 import corner
 
 def t14(per, ar, rprs, b, ecc=0, omega=90, transit=True):
@@ -316,3 +318,131 @@ def corner_plot(samples, labels, **kwargs):
                         quantiles=[0.16,0.5,0.84], **kwargs)
 
     return fig
+
+def make_psd(times, flux, plot=True, plot_max_freq=True, timeunit=None):
+    """Compute a Lomb-Scargle power spectral density (PSD) for a light curve.
+
+    The routine converts ``times`` (assumed in days) to seconds and the
+    input ``flux`` to parts-per-million (ppm), computes a dense frequency
+    grid, evaluates a Lomb-Scargle PSD on that grid and (optionally)
+    produces a log-log plot with a secondary axis showing period in an
+    appropriate time unit.
+
+    Parameters
+    ----------
+    times : array-like
+        Time stamps of the observations (in days).
+    flux : array-like
+        Relative flux measurements (unitless, e.g. normalised to 1.0). The
+        function converts these to ppm internally.
+    plot : bool, optional
+        If ``True`` (default) create and return a matplotlib figure and
+        axes containing the PSD plot. If ``False``, no plot is created and
+        ``fig`` and ``axs`` in the return tuple will be ``None``.
+    plot_max_freq : bool, optional
+        If ``True`` (default) mark the frequency with maximum power on the
+        plot with a vertical dashed line.
+    timeunit : {'d','hr','min'} or None, optional
+        Force the secondary x-axis unit for the period conversion. If
+        ``None`` (default) the function selects days/hours/minutes
+        automatically based on the frequency grid span.
+
+    Returns
+    -------
+    freq_grid : astropy.units.Quantity (Hz)
+        Frequency grid used to evaluate the PSD.
+    psd1 : astropy.units.Quantity
+        Lomb-Scargle power spectral density evaluated on ``freq_grid``
+        (units: ppm^2 Hz^-1).
+    fig : matplotlib.figure.Figure or None
+        Figure with the PSD plot when ``plot=True``, otherwise ``None``.
+    axs : matplotlib.axes.Axes or None
+        Axes for the PSD plot when ``plot=True``, otherwise ``None``.
+    per_max_pow : astropy.units.Quantity
+        Period corresponding to the maximum power in the PSD (converted
+        to days).
+
+    Notes
+    -----
+    The function uses ``astropy.timeseries.LombScargle`` for the PSD and
+    multiplies the input flux by 1e6 to report power in ppm^2 Hz^-1.
+    """
+
+    # Computing time in units of days to seconds
+    times = times * 24. * 60. * 60. * u.s
+    # Converting flux to ppm
+    fl1 = 1e6 * flux * u.dimensionless_unscaled
+
+    ## Frequency grid
+    min_freq, max_freq = 1 / np.ptp(times), 1 / np.nanmedian(np.diff(times)) * 0.5
+    freq_grid = np.linspace(min_freq, max_freq, 100000)
+
+    ## And the Lomb-Scargle periodogram
+    psd1 = LombScargle(times, fl1, normalization='psd').power(frequency=freq_grid)
+    
+    ## Computing the period corresponding to the highest power
+    idx_max_pow = np.argmax(psd1.value)
+    freq_max_pow = freq_grid[idx_max_pow]
+    per_max_pow = ( 1/freq_max_pow ).to(u.day)
+
+    # First, let's estimate the time units we need from times array:
+    time_grid = (1 / freq_grid ).to(u.d).value
+    if timeunit is None:
+        if np.ptp(time_grid) >= 1.:
+            ## If times duration is greater than 2 hours, we use days
+            time_unit = u.d
+            time_unit_label = 'Time [d]'
+        elif ( np.ptp(time_grid) > 5/24 ) and ( np.ptp(time_grid) < 1. ):
+            ## If times duration is greater than 2 hours, but less than 2 days, we use hours
+            time_unit = u.hr    # Converting days to hours
+            time_unit_label = 'Time [hr]'
+        else:
+            ## If times duration is less than 2 hours, we use minutes
+            time_unit = u.min
+            time_unit_label = 'Time [min]'
+    else:
+        if timeunit == 'd':
+            time_unit = u.d
+            time_unit_label = 'Time [d]'
+        elif timeunit == 'hr':
+            time_unit = u.hr
+            time_unit_label = 'Time [hr]'
+        elif timeunit == 'min':
+            time_unit = u.min
+            time_unit_label = 'Time [min]'
+        else:
+            raise ValueError("timeunit should be one of 'd', 'hr', or 'min'.")
+
+    if plot:
+        # Making the plot:
+        fig, axs = plt.subplots()
+
+        ## Un-binned data
+        axs.plot(freq_grid, psd1, alpha=1., color='orangered', lw=1., zorder=10)
+        if plot_max_freq:
+            axs.axvline(freq_max_pow.value, ls='--', c='cornflowerblue', lw=1., zorder=5)
+
+        # Define properties to define upper axis as well:
+        def freq2tim(x):
+            x = x * u.Hz
+            return (1/x).to(time_unit).value
+        
+        def tim2freq(x):
+            x = x * u.s
+            return (1/x).to(u.Hz).value
+
+        ax2 = axs.secondary_xaxis("top", functions=(freq2tim, tim2freq))
+        ax2.tick_params(axis='both', which='major')
+        ax2.set_xlabel(time_unit_label, labelpad=10)
+
+        axs.set_xscale('log')
+        axs.set_yscale('log')
+        
+        axs.set_xlabel(r'Frequency [Hz]')
+        axs.set_ylabel(r'Power [ppm$^2$ Hz$^{-1}$]')
+        
+        axs.set_xlim([np.min(freq_grid.value), np.max(freq_grid.value)])
+    else:
+        fig, axs = None, None
+
+    return freq_grid, psd1, fig, axs, per_max_pow
