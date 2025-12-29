@@ -243,8 +243,8 @@ class julietPlots(object):
             ax2 = plt.subplot(gs[1])
             ax2.errorbar(tim_ins, (fl_ins-full_model)*1e6, yerr=fle_ins*1e6, fmt='.', color='dodgerblue')#, alpha=0.3)
             ax2.axhline(y=0.0, c='black', ls='--', zorder=100)
-            ax2.set_ylabel('Residuals (ppm)')
-            ax2.set_xlabel('Time (BJD)')
+            ax2.set_ylabel('Residuals [ppm]')
+            ax2.set_xlabel('Time [BJD]')
             ax2.set_xlim(np.min(tim_ins), np.max(tim_ins))
 
             all_fig.append(fig)
