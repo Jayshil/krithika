@@ -1115,6 +1115,27 @@ class julietPlots(object):
         return figs_all, axs_all, binsize_all, noise_all, white_noise_all
     
     def plot_corner(self, planet_only=False, save=True):
+        """Create a corner plot of selected posterior parameters.
+
+
+        Parameters
+        ----------
+        planet_only : bool, optional
+            If ``True``, include only planetary parameters in the corner
+            plot. If ``False`` (default), include instrumental and noise
+            parameters as well when available.
+        save : bool, optional
+            If ``True`` (default), save the generated figure to
+            ``<input_folder>/corner_plot.png``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure produced by ``utils.corner_plot`` containing the
+            marginal and pairwise plots for the selected parameters.
+
+        """
+
         # Access the posteriors
         post_samps = self.res.posteriors['posterior_samples']
 
