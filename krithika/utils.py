@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.stats import mad_std
 import astropy.constants as con
+import corner
 
 def t14(per, ar, rprs, b, ecc=0, omega=90, transit=True):
     """
@@ -288,3 +289,30 @@ def fake_allan_deviation(times, residuals, binmax=10, method='pipe', timeunit=No
         fig, axs = None, None
 
     return fig, axs, binsize, noise*1e6, white_noise_expec
+
+
+def corner_plot(samples, labels, **kwargs):
+    """Generate a corner plot from MCMC samples.
+
+    Parameters
+    ----------
+    samples : ndarray
+        2D array of shape (n_samples, n_parameters) containing the MCMC samples.
+    labels : list of str
+        List of parameter names for labeling the axes.
+    figsize : tuple, optional
+        Size of the figure to create. Default is (9, 9).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The generated corner plot figure.
+    """
+
+    samples = np.transpose( np.vstack( samples ) )
+
+    fig = corner.corner(samples, labels=labels,
+                        show_titles=True, title_fmt=".2f",
+                        quantiles=[0.16,0.5,0.84], **kwargs)
+
+    return fig

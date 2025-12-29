@@ -1113,3 +1113,114 @@ class julietPlots(object):
             white_noise_all.append(white_noise)
 
         return figs_all, axs_all, binsize_all, noise_all, white_noise_all
+    
+    def plot_corner(self, planet_only=False, save=True):
+        # Access the posteriors
+        post_samps = self.res.posteriors['posterior_samples']
+
+        # Arrays for posteriors and labels
+        posteriors, labels, titles = [], [], []
+        for i in post_samps.keys():
+            par = i.split('_')
+            if ( 'p1' in par ) or ( 'p2' in par ) or ( 'p3' in par ) or ( 'p4' in par ) or ( 'q1' in par ) or ( 'q2' in par ) or ( 'rho' in par ):
+                ## Adding posteriors and labels ( this parameters are added no matter planet_only is True/False)
+                if i[0:3] == 'P_p':
+                    ## Period parameter: the uncertainty is generally very small, so we can scale it to make it plottable
+                    per_exponent_part = np.ceil( np.log10( np.nanstd( post_samps[i] ) ) )
+                    per_median = np.nanmedian( post_samps[i] )
+                    per = ( post_samps[i] - per_median ) / ( 10**per_exponent_part )
+
+                    ## Saving the posteriors
+                    posteriors.append( per )
+                    labels.append( i + ' [(P $-$ ' + str(np.around(per_median,5)) + ') / $10^{' + str(int(per_exponent_part)) + '}$ d]' )
+                    titles.append( par[0] )
+                
+                elif i[0:2] == 't0':
+                    ## Same for t0, we don't need to write out the whole thing
+                    t02 = np.floor( np.nanmedian(post_samps[i]) )
+
+                    posteriors.append( post_samps[i] - t02 )
+                    labels.append( i + ' [t0 $-$ ' + str(int(t02)) + ' d]' )
+                    titles.append( par[0] )
+                
+                elif (i[0:3] == 'p_p') or (i[0:4] == 'p1_p') or (i[0:4] == 'p2_p'):
+                    ## For Rp/R*, if there are more than 1 instruments, we will label them as 'instrument_name et al.'
+                    posteriors.append( post_samps[i] )
+                    titles.append( par[0] )
+                    if len(i.split('_')) > 3:
+                        labels.append('_'.join(i.split('_')[0:3]) + '_et al.')
+                    else:
+                        labels.append(i)
+                
+                elif (i[0:2] == 'q1') or (i[0:2] == 'q2'):
+                    ## Same for limb-darkening coefficients, if there are more than 1 instruments, we will label them as 'instrument_name et al.'
+                    posteriors.append( post_samps[i] )
+                    titles.append( par[0] )
+                    if len(i.split('_')) > 2:
+                        labels.append('_'.join(i.split('_')[0:2]) + '_et al.')
+                    else:
+                        labels.append(i)
+                
+                elif ( i[0:2] == 'fp' ) or ( i[0:4] == 'C1_p' ) or ( i[0:2] == 'C2' ) or ( i[0:2] == 'D1' ) or ( i[0:2] == 'D2' ):
+                    ## For flux parameters, we will label them as 'instrument_name et al.'
+                    posteriors.append( post_samps[i] * 1e6 )
+                    titles.append( par[0] )
+                    if len(i.split('_')) > 2:
+                        labels.append('_'.join(i.split('_')[0:2]) + '_et al. [ppm]')
+                    else:
+                        labels.append(i + ' [ppm]')
+
+                ## If there are 'sesinomega_p1' and 'secosomega_p1' parameters, we will convert them to 'e_p1' and 'omega_p1'
+                elif ( i[0:10] == 'secosomega' ):
+                    pl_num = i.split('_')[-1]
+                    sesinomega = post_samps['sesinomega_' + pl_num]
+                    secosomega = post_samps['secosomega_' + pl_num]
+
+                    e_p = sesinomega**2 + secosomega**2
+                    omega_p = np.arctan2( sesinomega, secosomega ) * 180. / np.pi
+
+                    ## First, add sesinomega
+                    posteriors.append( post_samps[i] )
+                    labels.append( i )
+                    titles.append( par[0] )
+
+                    ## And now, e and w
+                    posteriors.append( e_p )
+                    labels.append( 'e_' + pl_num )
+                    titles.append( 'e' )
+
+                    posteriors.append( omega_p )
+                    labels.append( r'$\omega$_' + pl_num + ' [deg]' )
+                    titles.append( r'$\omega$' )
+                
+                else:
+                    ## Else
+                    posteriors.append( post_samps[i] )
+                    labels.append( i )
+                    titles.append( par[0] )
+
+            else:
+                ## Rest of the parameters are only added if planet_only is False
+                if not planet_only:
+                    if ( i[0:7] != 'unnamed' ) and ( i[0:7] != 'loglike' ):
+                        posteriors.append( post_samps[i] )
+                        labels.append( i )
+                        titles.append( par[0] )
+        
+        # ------------------------------------------
+        #     Now, we can make the corner plot
+        # ------------------------------------------
+
+        ## Reducing fontsize specially for this plot
+        from matplotlib import rcParams
+        rcParams['font.size'] = 10.
+        rcParams['axes.labelsize'] = 'medium'
+        rcParams['xtick.labelsize'] = 'medium'
+        rcParams['ytick.labelsize'] = 'medium'
+        rcParams['axes.titlesize'] = 'large'
+
+        fig = utils.corner_plot(samples=posteriors, labels=labels, titles=titles)
+        if save:
+            plt.savefig(self.input_folder + '/corner_plot.png', dpi=250)
+
+        return fig
