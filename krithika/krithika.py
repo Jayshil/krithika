@@ -1245,3 +1245,292 @@ class julietPlots(object):
             plt.savefig(self.input_folder + '/corner_plot.png', dpi=250)
 
         return fig
+    
+    def plot_gp(self, instruments=None, highres=False, one_plot=False, figsize=(15/1.5, 6/1.5), pycheops_binning=False, xlabel='GP regressor', robust_errors=False, parameter_vector=None, nos_bin=20):
+        """Plot the Gaussian Process component(s) from the fitted `juliet` model.
+
+        This routine computes and plots the GP model (and binned data)
+        for one or more instruments present in the current `juliet` dataset.
+
+        Parameters
+        ----------
+        instruments : list or None
+            List of instrument names to plot. If ``None``, all instruments for
+            which GP regressors exist in ``self.dataset.GP_lc_arguments`` are
+            plotted.
+        highres : bool, optional
+            If ``True``, compute a high-resolution GP prediction (calls
+            ``compute_gp_model``). Default is ``False``.
+        one_plot : bool, optional
+            If ``True``, combine all instruments into a single figure and
+            return a single ``(fig, axs)``. If ``False``, return lists of
+            figures and axes (one per instrument). Default ``False``.
+        figsize : tuple, optional
+            Figure size passed to ``matplotlib``. Default ``(15/1.5, 6/1.5)``.
+        pycheops_binning : bool, optional
+            Use ``pycheops`` produced binning when set to ``True``.
+            Default ``False``.
+        xlabel : str, optional
+            X-axis label for the GP regressor. Default ``'GP regressor'``.
+        robust_errors : bool, optional
+            If ``True``, compute GP uncertainties using
+            ``compute_gp_model`` instead of using ``juliet`` precomputed errors.
+        parameter_vector : array-like or None, optional
+            If provided, passed to the GP parameter setter before computing
+            predictions (useful for evaluating GP at different parameter
+            values).
+        nos_bin : int, optional
+            Approximate number of bins to use when computing binned data per
+            instrument. Default ``20``.
+
+        Returns
+        -------
+        (fig, axs) or (fig_all, axs_all)
+            If ``one_plot`` is ``True``, returns a single tuple ``(fig, axs)``
+            for the combined figure. Otherwise returns ``(fig_all, axs_all)``
+            where each is a list containing one Figure/Axis per instrument.
+
+        """
+        # -------------------------------------------
+        #         List of all instruments
+        # -------------------------------------------
+        ## If instruments=None, we will generate one plot per instruments for all instruments for which GP fitting is done
+        if instruments != None:
+            ## Let's check if the provided instruments indeed have GP fitting
+            for ins in range(len(instruments)):
+                if instruments[ins] not in self.dataset.GP_lc_arguments.keys():
+                    raise ValueError('GP fitting is not found for instrument ' + instruments[ins])
+        else:
+            instruments = [i for i in self.dataset.GP_lc_arguments.keys()]
+        
+        # -------------------------------------------
+        #     Computing detrended data and model
+        # -------------------------------------------
+        self.detrend_data(phmin=0.8, instruments=instruments)
+        self.detrend_model(instruments=instruments, phmin=0.8, highres=False)
+
+        # -------------------------------------------
+        #      Let's now compute the residuals 
+        #        needed to plot the GP model
+        #   The total juliet model is:
+        #      y = T*F1 + F2 + GP + LM
+        #     => GP = y - T*F1 - F2 - LM
+        # -------------------------------------------
+        gp_model_regressor, self.gp_data = {}, {}
+        gp_med_model, gp_up68, gp_lo68 = {}, {}, {}
+        for i in range(len(instruments)):
+            # We note here that every array should be sorted according to GP regressors (e.g., time or roll angle)
+            # We will keep it that way -- everything sorted according GP regressors
+
+            ## -- We also need to compute linear model, if there is any
+            if instruments[i] in self.dataset.lm_lc_arguments.keys():
+                linear_model = self.models_all_ins[instruments[i]][-1]['lm']
+            else:
+                linear_model = 0.
+            
+            # -------------------------------------------
+            #   GP data: i.e., data fitted to GP model
+            # -------------------------------------------
+            self.gp_data[instruments[i]] = self.dataset.data_lc[instruments[i]] - ( self.F1[instruments[i]] * self.planet_only_models[instruments[i]][1] ) -\
+                                           self.F2[instruments[i]] - linear_model
+            
+            # -------------------------------------------
+            #  And GP model -- we need to compute them
+            # -------------------------------------------
+            
+            if not highres:
+                gp_model_regressor[instruments[i]] = np.copy( self.dataset.GP_lc_arguments[instruments[i]][:, 0] )
+                gp_med_model[instruments[i]] = self.all_mods_ins[instruments[i]]['GP']
+                if not robust_errors:
+                    gp_up68[instruments[i]], gp_lo68[instruments[i]] = self.all_mods_ins[instruments[i]]['GP_uerror'], self.all_mods_ins[instruments[i]]['GP_lerror']
+                else:
+                    ## In case of robust errors, we need to compute errors from ``compute_gp_model`` function
+                    gp_quantiles = self.compute_gp_model(instrument=instruments[i], highres=False, parameter_vector=parameter_vector)
+                    gp_up68[instruments[i]], gp_lo68[instruments[i]] = gp_quantiles[1,:], gp_quantiles[2,:]
+
+            else:
+                # High-resolution GP regressor per instrument
+                predict_time = np.linspace( np.min(self.dataset.GP_lc_arguments[instruments[i]][:, 0]),\
+                                            np.max(self.dataset.GP_lc_arguments[instruments[i]][:, 0]), 10000 )
+                
+                # ------ For highres models, we always need to compute models from ``compute_gp_model`` function
+                gp_quantiles = self.compute_gp_model(instrument=instruments[i], highres=True, pred_time=predict_time, parameter_vector=parameter_vector)
+
+                gp_model_regressor[instruments[i]] = predict_time
+
+                gp_med_model[instruments[i]] = gp_quantiles[0,:]
+                gp_up68[instruments[i]], gp_lo68[instruments[i]] = gp_quantiles[1,:], gp_quantiles[2,:]
+        
+        # Now, I think, we have everything -- so, let's plot!
+        # -------------------------------------------
+        #         Starting figure code:
+        #      one plot: do plt.subplots() here
+        # -------------------------------------------
+        if one_plot:
+            fig, axs = plt.subplots(figsize=figsize)
+            
+            # If there is one plot, then we also need to collect all data to compute binned data
+            bin_gp_reg, bin_resids, bin_errors = np.array([]), np.array([]), np.array([])
+            
+            # Also, in case we don't have highres model, we want to save all models before plotting
+            all_regressors_for_plotting, all_models_for_plotting = np.array([]), np.array([])
+            all_u68_mods_plotting, all_l68_mods_plotting = np.array([]), np.array([])
+        else:
+            # We need a list to save all fig and axs objects if we are planning more than one plot
+            fig_all, axs_all = [], []
+
+        for i in range(len(instruments)):
+            # -------------------------------------------
+            #    If not one plot, we need to create
+            #    fig and axs object inside for loop
+            # -------------------------------------------
+            if not one_plot:
+                fig, axs = plt.subplots(figsize=figsize)
+
+            # Plotting the "raw" data
+            axs.errorbar(self.dataset.GP_lc_arguments[instruments[i]][:,0], self.gp_data[instruments[i]]*1e6, fmt='.', alpha=0.1, color='dodgerblue', zorder=1)
+            
+            # ------------------------------------------
+            #    Now, we can plot the bin data and
+            #    quantile models here, if there is
+            #  no one plot, else, just save everything
+            #    to one big array, to plot outside
+            #     the for loop. We can also do
+            #        the label thing here.
+            # ------------------------------------------
+            if not one_plot:
+                # First bin-data
+                if not pycheops_binning:
+                    nbin = int( len( self.gp_data[instruments[i]] ) / nos_bin )
+                    bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=self.dataset.GP_lc_arguments[instruments[i]][:,0], y=self.gp_data[instruments[i]]*1e6, n_bin=nbin)
+
+                else:
+                    binwid = np.ptp( self.dataset.GP_lc_arguments[instruments[i]][:,0] ) / nos_bin
+                    bin_tim, bin_fl, bin_fle, _ = utils.lcbin(time=self.dataset.GP_lc_arguments[instruments[i]][:,0], flux=self.gp_data[instruments[i]]*1e6, binwidth=binwid)
+                axs.errorbar(bin_tim, bin_fl, yerr=bin_fle, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
+                    
+                # And now models
+                ## If we don't need highres model, we can simply plot what we have
+                ## Else, we need to create highres model first
+                axs.plot(gp_model_regressor[instruments[i]], gp_med_model[instruments[i]]*1e6, color='navy', lw=2.5, zorder=50)
+                
+                # If we are making one plot per instrument (i.e., one_plot=False), we can simply plot quantile models right here
+                axs.fill_between(gp_model_regressor[instruments[i]], y1=gp_lo68[instruments[i]]*1e6, y2=gp_up68[instruments[i]]*1e6, color='orangered', alpha=0.5, zorder=25)
+
+                # Labels, limits
+                axs.set_xlabel(xlabel)
+                axs.set_ylabel('Relative flux [ppm]')
+
+                axs.set_xlim([ np.min(self.dataset.GP_lc_arguments[instruments[i]][:,0]), np.max(self.dataset.GP_lc_arguments[instruments[i]][:,0]) ])
+                axs.set_ylim([ np.nanmedian(bin_fl)-5*utils.pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*utils.pipe_mad(bin_fl) ])
+
+                # Saving fig, axs to the list
+                fig_all.append(fig)
+                axs_all.append(axs)
+            else:
+                # Saving data to the big list
+                bin_gp_reg, bin_resids = np.hstack( (bin_gp_reg, self.dataset.GP_lc_arguments[instruments[i]][:,0]) ), np.hstack( (bin_resids, self.gp_data[instruments[i]]*1e6) )
+                bin_errors = np.hstack( (bin_errors, self.detrended_errs[instruments[i]]*1e6) )
+                # Saving models to the list
+                all_regressors_for_plotting = np.hstack( (all_regressors_for_plotting, gp_model_regressor[instruments[i]]) )
+                all_models_for_plotting = np.hstack( (all_models_for_plotting, gp_med_model[instruments[i]]*1e6) )
+
+                ## Let's first save the quantile models
+                all_l68_mods_plotting = np.hstack( (all_l68_mods_plotting, gp_lo68[instruments[i]]*1e6) )
+                all_u68_mods_plotting = np.hstack( (all_u68_mods_plotting, gp_up68[instruments[i]]*1e6) )
+        
+        # ------------------------------------------
+        #    If one plot, we can now plot the 
+        #    bin data, quantile models, labels 
+        #    etc. now, outside of the for loop
+        # ------------------------------------------
+        if one_plot:
+            # First, bin data
+            if not pycheops_binning:
+                nbin = int( len( bin_gp_reg ) / nos_bin / len(instruments) )
+                bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=bin_gp_reg, y=bin_resids, n_bin=nbin)
+
+            else:
+                binwid = np.ptp( bin_gp_reg ) / nos_bin / len(instruments)
+                bin_tim, bin_fl, bin_fle, _ = utils.lcbin(time=bin_gp_reg, flux=bin_resids, binwidth=binwid)
+            axs.errorbar(bin_tim, bin_fl, yerr=bin_fle, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
+
+            if highres:
+                # ------------------------------------------
+                #     One plot _and_ highres requires a 
+                #          special treatment
+                # ------------------------------------------
+                ## -- Okay, we need one plot, in high resolution, i.e., we need to call a function to do this.
+                idx_gp_reg_sort = np.argsort(bin_gp_reg)
+                pred_time = np.linspace(np.min(bin_gp_reg[idx_gp_reg_sort]), np.max(bin_gp_reg[idx_gp_reg_sort]), 10000)
+                gp_quantiles = self.compute_gp_model(instrument=None, highres=True, times=bin_gp_reg[idx_gp_reg_sort], pred_time=pred_time,\
+                                                     resids=bin_resids[idx_gp_reg_sort]/1e6, errors=bin_errors[idx_gp_reg_sort]/1e6,\
+                                                     parameter_vector=parameter_vector)
+                
+                axs.plot(pred_time, gp_quantiles[0,:]*1e6, color='navy', lw=2.5, zorder=50)
+                axs.fill_between(pred_time, y1=gp_quantiles[2,:]*1e6, y2=gp_quantiles[1,:]*1e6, color='orangered', alpha=0.5, zorder=25)
+
+            else:
+                ## First, sorting according to regressors, and then plotting the full model
+                idx_reg_sort = np.argsort(all_regressors_for_plotting)
+                axs.plot(all_regressors_for_plotting[idx_reg_sort], all_models_for_plotting[idx_reg_sort], color='navy', lw=2.5, zorder=50)
+                
+                # We can plot qunatile models here, if highres=False
+                axs.fill_between(all_regressors_for_plotting[idx_reg_sort], y1=all_l68_mods_plotting[idx_reg_sort], y2=all_u68_mods_plotting[idx_reg_sort], color='orangered', alpha=0.5, zorder=25)
+            
+            # Labels, limits
+            axs.set_xlabel(xlabel)
+            axs.set_ylabel('Relative flux [ppm]')
+
+            axs.set_xlim([ np.min(bin_gp_reg), np.max(bin_gp_reg) ])
+            axs.set_ylim([ np.nanmedian(bin_fl)-5*utils.pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*utils.pipe_mad(bin_fl) ])
+
+        if one_plot:
+            return fig, axs
+        else:
+            return fig_all, axs_all
+        
+    def compute_gp_model(self, instrument=None, highres=None, times=None, pred_time=None, resids=None, errors=None, parameter_vector=None):
+        """This function computes the GP models. It accesses the GP object from the juliet files, and then do GP.compute and GP.predict."""
+        
+        # If we compute GP model this way, then the errors will always be robust because we will be using gp.predict
+
+        # If time is None: that means that we need model for an instrument (not one model for all instruments)
+        #
+        # times is not None, means that we need one model for more than one instruments
+        # This model is always highres
+        # This also assumes that the GP model is the same for all instruments
+        
+        if times is None:
+            # When time is None, means that we haven't provided any data, so we need to extract it from self.
+            ## Extracting times (GP regressors) from self.dataset object
+            times = self.dataset.GP_lc_arguments[instrument][:,0]
+            ## Similarly, extracting GP data and errors from self
+            resids, errors = self.gp_data[instrument], self.detrended_errs[instrument]
+            
+            if highres:
+                # Model for one instrument, but still highres model
+                pred_time = np.linspace(np.min(times), np.max(times), 10000)
+            else:
+                # Not highres model
+                pred_time = np.copy(times)
+        
+        else:
+            # We don't need any data in this case, since everything is provided, 
+            # but we still need a name of an instrument to access GP object
+            instrument = [i for i in self.dataset.GP_lc_arguments.keys()][0]
+
+        if parameter_vector is not None:
+            self.dataset.lc_options[instrument]['noise_model'].GP.set_parameter_vector(parameter_vector)
+        
+        # GP.compute
+        self.dataset.lc_options[instrument]['noise_model'].GP.compute(t=times, yerr=errors)
+        # And GP prediction
+        gp_mean, gp_var = self.dataset.lc_options[instrument]['noise_model'].GP.predict(y=resids, t=pred_time, return_var=True)
+        gp_std = np.sqrt(gp_var)
+
+        gp_quantiles = np.zeros( (3, len(gp_mean)) )
+        gp_quantiles[0, :] = gp_mean
+        gp_quantiles[1, :], gp_quantiles[2, :] = gp_mean + gp_std, gp_mean - gp_std
+
+        return gp_quantiles
