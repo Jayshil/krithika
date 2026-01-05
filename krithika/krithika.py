@@ -445,7 +445,7 @@ class julietPlots(object):
                 self.phases_model[instruments[ins]] = juliet.utils.get_phases(t=self.dataset.times_lc[instruments[ins]], P=per, t0=t0, phmin=phmin)
 
     
-    def phase_folded_lc(self, phmin=0.8, instruments=None, highres=False, nrandom=50, quantile_models=True, one_plot=None, figsize=(16/1.5, 9/1.5), pycheops_binning=False):
+    def phase_folded_lc(self, phmin=0.8, instruments=None, highres=False, nrandom=50, quantile_models=True, one_plot=None, figsize=(16/1.5, 9/1.5), pycheops_binning=False, nos_bin_tra=20, nos_bin_pc=30):
         """Plot phase-folded light curves and models for the fitted dataset.
 
         This method computes detrended data and planetary models by
@@ -488,6 +488,10 @@ class julietPlots(object):
             If ``True``, use binning as produced by ``pycheops`` the
             binned datapoints. If ``False``, it will use default ``juliet``
             binning. Default ``False``.
+        nos_bin_tra : int, optional
+            Number of total binned data points in transit plot. Default is 20.
+        nos_bin_pc : int, optional
+            Number of total binned data points in phase curve plot. Default is 30.
 
         Returns
         -------
@@ -715,7 +719,7 @@ class julietPlots(object):
             if quantile_models:
                 if (not one_plot) or highres:
                     ## Again, if we are making one plot, we can plot the detrended quantile models out of loop
-                    ax1.fill_between(phs_model, y1=lo_68CI*ppt, y2=up_68CI*ppt, color='orangered', alpha=0.5, zorder=25)
+                    ax1.fill_between(phs_model, y1=lo_68CI*ppt, y2=up_68CI*ppt, color='orangered', alpha=0.15, zorder=25)
             else:
                 for rand in range(nrandom):
                     ax1.plot(phs_model, random_models[rand,:]*ppt, color='orangered', alpha=0.5, lw=1., zorder=25)
@@ -757,7 +761,7 @@ class julietPlots(object):
                     idx_transits = ( phs > 0.5-0.8*t14_phs ) & ( phs < 0.5+0.8*t14_phs )
                 
                 if not pycheops_binning:
-                    nbin = int( np.sum(idx_transits) / 20 )
+                    nbin = int( np.sum(idx_transits) / nos_bin_tra )
 
                     bin_phs_tra, bin_fl_tra, bin_fle_tra = juliet.utils.bin_data(x=phs[idx_transits], y=detrend_data[idx_transits]*ppt, n_bin=nbin, yerr=detrend_errs[idx_transits]*ppt)
                     if phasecurve or eclipse:
@@ -766,7 +770,7 @@ class julietPlots(object):
                         # When transit only, we haven't multiplied the errorbars with 1e6 yet; so we need to do it again
                         _, bin_res_tra, bin_reserr_tra = juliet.utils.bin_data(x=phs[idx_transits], y=residuals[idx_transits]*1e6, n_bin=nbin, yerr=detrend_errs[idx_transits]*1e6)
                 else:
-                    binwid = np.ptp( phs[idx_transits] ) / 20.
+                    binwid = np.ptp( phs[idx_transits] ) / nos_bin_tra
 
                     bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = utils.lcbin(time=phs[idx_transits], flux=detrend_data[idx_transits]*ppt, binwidth=binwid)
                     if phasecurve or eclipse:
@@ -799,7 +803,7 @@ class julietPlots(object):
                 if quantile_models:
                     if (not one_plot) or highres:
                         ## If we are making one plot, we can take this outside of the loop
-                        ax3.fill_between(phs_model, y1=lo_68CI, y2=up_68CI, color='orangered', alpha=0.5, zorder=25)
+                        ax3.fill_between(phs_model, y1=lo_68CI, y2=up_68CI, color='orangered', alpha=0.15, zorder=25)
                 else:
                     for rand in range(nrandom):
                         ax3.plot(phs_model, random_models[rand,:], color='orangered', alpha=0.5, lw=1., zorder=25)
@@ -825,11 +829,11 @@ class julietPlots(object):
                 ## We do binned data here: ONLY if we don't have one plot
                 if not one_plot:
                     if not pycheops_binning:
-                        bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=phs, y=detrend_data, n_bin=int( len(phs)/40 ), yerr=detrend_errs)
-                        _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=phs, y=residuals*1e6, n_bin=int( len(phs)/40 ), yerr=detrend_errs)
+                        bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=phs, y=detrend_data, n_bin=int( len(phs)/nos_bin_pc ), yerr=detrend_errs)
+                        _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=phs, y=residuals*1e6, n_bin=int( len(phs)/nos_bin_pc ), yerr=detrend_errs)
                     else:
-                        bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=phs, flux=detrend_data, binwidth=1/50)
-                        _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=phs, flux=residuals*1e6, binwidth=1/50)
+                        bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=phs, flux=detrend_data, binwidth=1/nos_bin_pc)
+                        _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=phs, flux=residuals*1e6, binwidth=1/nos_bin_pc)
 
                     # Plotting them
                     ax3.errorbar(bin_phs_pc, bin_fl_pc, yerr=bin_fle_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
@@ -914,7 +918,7 @@ class julietPlots(object):
                 idx_transits = ( bin_phs > 0.5-0.8*t14_phs ) & ( bin_phs < 0.5+0.8*t14_phs )
             
             if not pycheops_binning:
-                nbin = int( np.sum(idx_transits) / 20 )
+                nbin = int( np.sum(idx_transits) / nos_bin_tra )
 
                 # Performing binning
                 bin_phs_tra, bin_fl_tra, bin_fle_tra = juliet.utils.bin_data(x=bin_phs[idx_transits], y=bin_fl[idx_transits]*ppt, n_bin=nbin, yerr=bin_fle[idx_transits]*ppt)
@@ -924,7 +928,7 @@ class julietPlots(object):
                     # When transit only, we haven't multiplied the errorbars with 1e6 yet; so we need to do it again
                     _, bin_res_tra, bin_reserr_tra = juliet.utils.bin_data(x=bin_phs[idx_transits], y=bin_res[idx_transits]*1e6, n_bin=nbin, yerr=bin_fle[idx_transits]*1e6)
             else:
-                binwid = np.ptp( bin_phs[idx_transits] ) / 20.
+                binwid = np.ptp( bin_phs[idx_transits] ) / nos_bin_tra
 
                 # Performing binning
                 bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = utils.lcbin(time=bin_phs[idx_transits], flux=bin_fl[idx_transits]*ppt, binwidth=binwid)
@@ -946,11 +950,11 @@ class julietPlots(object):
             # -------------------------------------------
             if phasecurve:
                 if not pycheops_binning:
-                    bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=bin_phs, y=bin_fl, n_bin=int( len(phs)/20 ), yerr=bin_fle)
-                    _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=bin_phs, y=bin_res*1e6, n_bin=int( len(phs)/20 ), yerr=bin_fle)
+                    bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=bin_phs, y=bin_fl, n_bin=int( len(bin_phs)/nos_bin_pc ), yerr=bin_fle)
+                    _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=bin_phs, y=bin_res*1e6, n_bin=int( len(bin_phs)/nos_bin_pc ), yerr=bin_fle)
                 else:
-                    bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=bin_phs, flux=bin_fl, binwidth=1/50)
-                    _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=bin_phs, flux=bin_res*1e6, binwidth=1/50)
+                    bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=bin_phs, flux=bin_fl, binwidth=1/nos_bin_pc)
+                    _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=bin_phs, flux=bin_res*1e6, binwidth=1/nos_bin_pc)
 
                 # Plotting them
                 ax3.errorbar(bin_phs_pc, bin_fl_pc, yerr=bin_fle_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
