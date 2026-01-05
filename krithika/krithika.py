@@ -79,13 +79,57 @@ class CHEOPSData(object):
         return data
     
 class julietPlots(object):
+    """Plotting helper for results produced by a `juliet` analysis.
+
+    This class loads a `juliet` input/output folder, computes models from the
+    fitted posterior and provides a collection of convenience plotting and
+    data-processing methods for light-curve visualisation. Typical usage is
+    to instantiate the class with the `input_folder` used for a juliet fit
+    and then call plotting helpers such as :meth:`full_model_lc`,
+    :meth:`plot_gp` or :meth:`detrend_data`.
+
+    Attributes
+    ----------
+    input_folder : str, optional
+        Path to the juliet input/output folder provided at construction.
+        The user need to provide either input_folder or dataset and res
+    dataset : juliet.load object, optioanl
+        The object returned by ``juliet.load`` for the given input folder.
+    res : juliet.fit, optional
+        The result of calling ``dataset.fit(...)``.
+    N : int
+        Number of posterior samples drawn when evaluating sampled models.
+    **kwargs : dict, optional
+        Any additional keywords provided to juliet.fit object.
+
+    Main methods
+    ------------
+    full_model_lc(instruments=None, save=False, nrandom=50, quantile_models=True)
+        Plot observed light curves with the full fitted model and residuals.
+    
+    phase_folded_lc(phmin=0.8, instruments=None, highres=False, ...)
+        Plot phase folder light curve with best-fitted planetary model for one or more instruments.
+    
+    plot_gp(instruments=None, highres=False, one_plot=False, ...)
+        Plot GP components and binned residuals for one or more instruments.
+
+    plot_fake_allan_deviation(instruments=None, binmax=10, method='pipe', timeunit=None)
+        Plot "allan deviation" plot, which is noise as a function of binning, for one or more instruments
+    
+    plot_corner(planet_only=False, save=True)
+        Plot corner plots for fitted posterior samples, can use planet-only or all parameters.
+    
     """
-    Given the `juliet` input folder, this class can create various plots
-    """
-    def __init__(self, input_folder, N=1000, **kwargs):
+    def __init__(self, input_folder=None, dataset=None, res=None, N=1000, **kwargs):
         # First order of business: loading the juliet folder
-        self.dataset = juliet.load(input_folder=input_folder)
-        self.res = self.dataset.fit(**kwargs)
+        # We can optinally provide datasets and res directly
+
+        if ( dataset is None ) and ( input_folder is not None ):
+            self.dataset = juliet.load(input_folder=input_folder)
+            self.res = self.dataset.fit(**kwargs)
+        else:
+            self.dataset = dataset
+            self.res = res
 
         # Saving those kwargs
         self.fit_kwargs = kwargs
