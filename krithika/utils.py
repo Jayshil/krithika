@@ -446,3 +446,37 @@ def make_psd(times, flux, plot=True, plot_max_freq=True, timeunit=None):
         fig, axs = None, None
 
     return freq_grid, psd1, fig, axs, per_max_pow
+
+def standarize_data(input_data):
+    """
+    Standarize the dataset.
+    The function originally written by N. Espinoza
+    for TESS data analysis.
+    """
+    output_data = np.copy(input_data)
+    averages = np.nanmedian(input_data,axis=1)
+    for i in range(len(averages)):
+        sigma = mad_std(output_data[i,:])
+        output_data[i,:] = output_data[i,:] - averages[i]
+        output_data[i,:] = output_data[i,:]/sigma
+    return output_data
+
+def classic_PCA(Input_Data, standarize = True):
+    """  
+    classic_PCA function
+    Description
+    This function performs the classic Principal Component Analysis on a given dataset.
+    The function originally written by N. Espinoza
+    for TESS data analysis.
+    """
+    if standarize:
+        Data = standarize_data(Input_Data)
+    else:
+        Data = np.copy(Input_Data)
+    eigenvectors_cols,eigenvalues,eigenvectors_rows = np.linalg.svd(np.cov(Data))
+    idx = eigenvalues.argsort()
+    eigenvalues = eigenvalues[idx[::-1]]
+    eigenvectors_cols = eigenvectors_cols[:,idx[::-1]]
+    eigenvectors_rows = eigenvectors_rows[idx[::-1],:]
+    # Return: V matrix, eigenvalues and the principal components.
+    return eigenvectors_rows,eigenvalues,np.dot(eigenvectors_rows,Data)
