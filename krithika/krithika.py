@@ -1774,6 +1774,24 @@ class ApPhoto(object):
         
         return self.frames
     
+    def plot_median_image(self):
+        """This function plots the median image frame
+        
+        Returns
+        -------
+        fig : matplotlib.figure.Figure or None
+            Figure of median image.
+        im : matplotlib.image.AxesImage or None
+            Image object from the median image plot.
+        axs : ndarray or None
+            Axes of the figure.
+        """
+        fig, axs = plt.subplots( figsize=(5,5) )
+        im = axs.imshow( np.nanmedian(self.frames, axis=0), interpolation='none' )
+        axs.set_title('Median image')
+
+        return fig, im, axs
+    
     def find_center(self, rmin=None, rmax=None, cmin=None, cmax=None, plot=False):
         """Compute center-of-flux centroids for each frame in the 3D data cube.
 
