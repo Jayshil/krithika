@@ -1,15 +1,19 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gd
+from astroquery.mast import Observations
 from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import mad_std
 from scipy.interpolate import interp1d
+from glob import glob
 from tqdm import tqdm
 import plotstyles
+import pickle
 import juliet
 import utils
 import warnings
+import os
 
 try:
     from photutils.aperture import CircularAnnulus, CircularAperture, ApertureStats
@@ -2561,3 +2565,128 @@ class ApPhoto(object):
 
         return pcs_to_include, mad_with_pcs, fig, axs
     
+
+class TESSData(object):
+    def __init__(self, object_name):
+        self.object_name = object_name
+
+    def get_lightcurves(self, pdc=True, save=False, pout=None, **kwargs):
+        try:
+            self.tim_lc, self.fl_lc, self.fle_lc = juliet.utils.get_all_TESS_data(object_name=self.object_name, get_PDC=pdc, **kwargs)
+            self.out_dict_lc = None
+        except:
+            self.out_dict_lc, self.tim_lc, self.fl_lc, self.fle_lc = juliet.utils.get_all_TESS_data(object_name=self.object_name, get_PDC=pdc, **kwargs)
+        if save:
+            for ins in self.tim.keys():
+                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '.dat', 'w' )
+                for t in range( len(self.tim[ins]) ):
+                    fname.write( str( self.tim[ins][t] ) + '\t' + str( self.fl[ins][t] ) + '\t' + str( self.fle[ins][t] ) + '\n' )
+                fname.close()
+        return self.tim_lc, self.fl_lc, self.fle_lc, self.out_dict_lc
+
+    def get_tpfs(self, pout=None, load=False, save=False):
+        if not load:
+            try:
+                obt = Observations.query_object(self.object_name, radius=0.01)
+            except:
+                raise Exception('The name of the object does not seem to be correct.\nPlease try again...')
+            
+            b = np.array([])
+            for j in range(len(obt['intentType'])):
+                if obt['obs_collection'][j] == 'TESS' and obt['dataproduct_type'][j] == 'timeseries':
+                    b = np.hstack( (b, j) )
+            
+            if len(b) == 0:
+                raise Exception('No TESS timeseries data available for this target (strange, right?!!).\nTry another target...')
+            
+            sectors, pi_name, obsids, exptime, new_b = np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+            for i in range(len(b)):
+                data1 = obt['dataURL'][int(b[i])]
+                if data1[-9:] == 's_lc.fits':
+                    fls = data1.split('-')
+                    for j in range(len(fls)):
+                        if len(fls[j]) == 5:
+                            sec = fls[j]
+                            tic = fls[j+1]
+                    sectors = np.hstack((sectors, sec))
+                    new_b = np.hstack((new_b, b[i]))
+                    obsids = np.hstack((obsids, obt['obsid'][int(b[i])]))
+                    pi_name = np.hstack((pi_name, obt['proposal_pi'][int(b[i])]))
+                    exptime = np.hstack((exptime, obt['t_exptime'][int(b[i])]))
+            print('Data products found over ' + str( len(sectors) ) + ' sectors.')
+            print('Downloading them...')
+            disp_tic, disp_sec = [], []
+            
+            # Dictionaries for saving the data in self
+            self.tim_tpf, self.fl_tpf, self.fle_tpf, self.badpix, self.quality = {}, {}, {}, {}, {}
+
+            for i in range(len(sectors)):
+                dpr = Observations.get_product_list(obt[int(new_b[i])])
+                cij = 0
+                for j in range(len(dpr['obsID'])):
+                    if dpr['description'][j] == 'Target pixel files':
+                        cij = j
+                
+                tab = Observations.download_products(dpr[cij])
+                lpt = tab['Local Path'][0][1:]
+                
+                # Reading fits
+                hdul = fits.open(os.getcwd() + lpt)
+                hdr = hdul[0].header
+                
+                ## Finding TIC-id and sector
+                ticid = int(hdr['TICID'])
+                ticid = f"{ticid:010}"
+                disp_tic.append(ticid)
+
+                sec_tess = 'TESS' + str( hdr['SECTOR'] )
+                disp_sec.append(sec_tess)
+                
+                dta = Table.read(hdul[1])
+
+                # Creating a mask array to mask NaN
+                idx = np.ones( dta['FLUX'].shape[0], dtype=bool )
+                for t in range( dta['FLUX'].shape[0] ):
+                    nan = np.where( np.isnan( dta['FLUX'][t,:,:] ) )
+                    if len( nan[0] ) == len( dta['FLUX'][t,:,:].flatten() ):
+                        idx[t] = False
+
+                self.tim_tpf[sec_tess] = dta['TIME'][idx]
+                self.fl_tpf[sec_tess], self.fle_tpf[sec_tess] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
+                self.quality[sec_tess] = dta['QUALITY'][idx]
+                self.badpix[sec_tess] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
+
+                if save:
+                    data_sector = {}
+                    data_sector['TIME'] = dta['TIME'][idx]
+                    data_sector['FLUX'], data_sector['FLUX_ERR'] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
+                    data_sector['QUALITY'] = dta['QUALITY'][idx]
+                    data_sector['BADPIX'] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
+
+                    if pout is None:
+                        pout = os.getcwd()
+
+                    ## And saving them
+                    pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_' + sec_tess + '.pkl','wb') )
+            
+            os.system('rm -rf mastDownload')
+        else:
+            fnames = glob(pout + '/TPF_' + self.object_name + '_TESS*.pkl')
+            
+            # Dictionaries for saving the data in self
+            self.tim_tpf, self.fl_tpf, self.fle_tpf, self.badpix, self.quality = {}, {}, {}, {}, {}
+            for i in range(len(fnames)):
+                data_sector = pickle.load( open( fnames[i], 'rb' ) )
+
+                ## Sector name
+                sec_name = fnames[i].split('/')[-1].split('.')[0].split('_')[-1]
+
+                ## Loading the data
+                self.tim_tpf[sec_name] = data_sector['TIME']
+                self.fl_tpf[sec_name], self.fle_tpf[sec_name] = data_sector['FLUX'], data_sector['FLUX_ERR']
+                self.quality[sec_name] = data_sector['QUALITY']
+                self.badpix[sec_name] = data_sector['BADPIX']
+
+    def ApPhoto(self, sector, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, minmax=None):
+        return ApPhoto(times=self.tim_tpf[sector], frames=self.fl_tpf[sector], errors=self.fle_tpf[sector], badpix=self.badpix[sector],\
+                       aprad=aprad, sky_rad1=sky_rad1, sky_rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
