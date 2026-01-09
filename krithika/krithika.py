@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gd
-from matplotlib.patches import Circle
 from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import mad_std
@@ -1616,10 +1615,34 @@ class ApPhoto(object):
         2D bad-pixel mask for a single frame (shape ``(Ny, Nx)``).
         A value of zero indicates a bad/ignored pixel; non-zero
         indicates a usable pixel.
+    aprad : float or None, optional
+        Aperture radius in pixels for circular aperture photometry.
+        Used by :meth:`aperture_mask` and :meth:`simple_aperture_photometry`.
+        Ignored when ``brightpix`` is True. Default is ``None``.
+    sky_rad1 : float or None, optional
+        Inner radius (pixels) of the sky annulus. Used by :meth:`sky_mask`
+        and :meth:`simple_aperture_photometry` for background estimation.
+        If omitted and ``brightpix`` is False, an empty (zero) mask is returned.
+        Default is ``None``.
+    sky_rad2 : float or None, optional
+        Outer radius (pixels) of the sky annulus. Used by :meth:`sky_mask`
+        and :meth:`simple_aperture_photometry` for background estimation.
+        Default is ``None``.
+    brightpix : bool, optional
+        If ``True``, select ``nos_brightest`` brightest pixels to form an aperture 
+        instead of circular aperture. Used by :meth:`aperture_mask` and :meth:`sky_mask`. 
+        Default ``False``.
+    nos_brightest : int, optional
+        Number of brightest pixels to include in aperture when ``brightpix=True``.
+        Default ``12``.
+    minmax : dict or None, optional
+        Optional spatial bounds for brightest pixel selection with keys
+        'rmin', 'rmax', 'cmin', 'cmax'. Default is ``None``.
 
     Attributes
     ----------
     times, frames, errors, badpix : as above
+    aprad, sky_rad1, sky_rad2, brightpix, nos_brightest, minmax : as above
     cen_r, cen_c : ndarray
         Per-frame row/column centroid positions (populated by
         :meth:`find_center`).
@@ -1638,17 +1661,10 @@ class ApPhoto(object):
         Iteratively fill NaNs in ``frames`` from neighboring pixels.
     find_center(rmin,rmax,cmin,cmax)
         Compute center-of-flux centroids per frame.
-    aperture_mask(rad, brightpix, ...)
-        Build a circular or brightest-pixel aperture mask and return
-        masked frame/error arrays.
-    sky_mask(rad1,rad2, brightpix, ...)
-        Build a sky-annulus mask or select sky pixels and return masked
-        frame/error arrays.
-    simple_aperture_photometry(...)
-        Extract aperture photometry using manual, photutils, or median
-        methods.
-    pixel_level_decorrelation(rad, ...)
-        Build normalized pixel fractions and compute PCA basis for PLD.
+    simple_aperture_photometry(method, plot, ...)
+        Extract aperture photometry using manual, photutils, or median methods.
+    pixel_level_decorrelation(removeNan)
+        Build normalized pixel level light curves and compute PCA basis for PLD.
 
     Notes
     -----
@@ -1656,11 +1672,22 @@ class ApPhoto(object):
     subsequent calls; many methods modify the instance in-place and
     also return results for convenience.
     """
-    def __init__(self, times, frames, errors, badpix):
+    def __init__(self, times, frames, errors, badpix, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, minmax=None):
+        # The data
         self.times = times
         self.frames = frames
         self.errors = errors
         self.badpix = badpix
+
+        # The aperture information
+        self.aprad = aprad
+        self.sky_rad1, self.sky_rad2 = sky_rad1, sky_rad2
+        self.brightpix = brightpix
+        self.nos_brightest = nos_brightest
+        self.minmax = minmax
+
+        if ( self.aprad == None ) and ( not self.brightpix ):
+            raise Exception('You need to define an aperture by providing either aperture radius (aprad)\nOr setting brightpix=True, which will form the aperture from bightest pixels.')
     
     def identify_crays(self, clip=5, niters=5):
         """Identify cosmic-ray affected pixels and update the bad-pixel map
@@ -1823,29 +1850,17 @@ class ApPhoto(object):
 
         return self.cen_r, self.cen_c, fig, axs
     
-    def aperture_mask(self, rad=None, brightpix=False, nos_brightest=12, minmax=None, plot=False):
+    def aperture_mask(self, plot=False):
         """Build a binary aperture mask (and masked frame/error arrays).
 
         By default a circular aperture is created on the median image using
         the median centroid position computed from ``self.cen_r`` and
-        ``self.cen_c``. Alternatively, when ``brightpix=True``, the mask is
-        formed by selecting the ``nos_brightest`` brightest pixels from the
-        median image (optionally limited by ``minmax`` bounds).
+        ``self.cen_c``. Alternatively, when ``self.brightpix=True``, the mask is
+        formed by selecting the ``self.nos_brightest`` brightest pixels from the
+        median image (optionally limited by ``self.minmax`` bounds).
 
         Parameters
         ----------
-        rad : float or None
-            Aperture radius in pixels for the circular aperture. Ignored
-            when ``brightpix`` is True.
-        brightpix : bool, optional
-            If True, select the brightest ``nos_brightest`` pixels
-            instead of a circular aperture (default False).
-        nos_brightest : int, optional
-            Number of brightest pixels to include when ``brightpix`` is
-            True (default 12).
-        minmax : dict or None, optional
-            Optional dictionary with keys ``'rmin'``, ``'rmax'``,
-            ``'cmin'``, ``'cmax'`` to constrain the pixel selection.
         plot : bool, optional
             If ``True``, produce a plot of median image with aperture
             plotted on the top (default ``False``).
@@ -1862,8 +1877,16 @@ class ApPhoto(object):
             (shape ``(Ny, Nx)``).
         fig : matplotlib.figure.Figure or None
             Figure of median image and aperture mask, if ``plot=True``, otherwise ``None``.
+        im : matplotlib.image.AxesImage or None
+            Image object from the median image plot if ``plot=True``, otherwise ``None``.
         axs : ndarray or None
             Axes of the figure if produced, otherwise ``None``.
+
+        Notes
+        -----
+        Uses instance attributes ``self.aprad``, ``self.brightpix``,
+        ``self.nos_brightest``, and ``self.minmax`` to control aperture
+        construction.
         """
 
         # Median image
@@ -1871,7 +1894,7 @@ class ApPhoto(object):
         # Now, creating mask
         ap_bool_msk = np.zeros(med_img.shape)
         
-        if not brightpix:
+        if not self.brightpix:
             # Let's first find a distance array which will contain the distance of each pixels from the center
             idx_arr_r, idx_arr_c = np.meshgrid(np.arange(med_img.shape[0]), np.arange(med_img.shape[1]))
             idx_arr_r, idx_arr_c = np.transpose(idx_arr_r), np.transpose(idx_arr_c)
@@ -1882,7 +1905,7 @@ class ApPhoto(object):
             # Distance array would give distace of each pixel from the center
             distance = np.sqrt(((idx_arr_r - np.nanmedian(self.cen_r))**2) + ((idx_arr_c - np.nanmedian(self.cen_c))**2))
 
-            ap_bool_msk[distance < rad] = 1.
+            ap_bool_msk[distance < self.aprad] = 1.
 
         else:
             # Sorting all pixels values; so that we can select first N bright pixels in the aperture
@@ -1890,9 +1913,9 @@ class ApPhoto(object):
             med_img_sorted = np.sort(med_img_flat)
 
             # minmax != None
-            if minmax is not None:
-                rmin, rmax = minmax['rmin'], minmax['rmax']
-                cmin, cmax = minmax['cmin'], minmax['cmax']
+            if self.minmax is not None:
+                rmin, rmax = self.minmax['rmin'], self.minmax['rmax']
+                cmin, cmax = self.minmax['cmin'], self.minmax['cmax']
             else:
                 rmin, rmax = 0, 10000
                 cmin, cmax = 0, 10000
@@ -1913,7 +1936,7 @@ class ApPhoto(object):
                         ap_bool_msk[ind[0][0], ind[1][0]] = 1.
 
                         ap_pix_nos = ap_pix_nos + 1
-                        if ap_pix_nos>nos_brightest:
+                        if ap_pix_nos>self.nos_brightest:
                             tot_num = False
                         i = i + 1
 
@@ -1931,36 +1954,25 @@ class ApPhoto(object):
             axs[0].set_title('Median image + Aperture mask')
             axs[1].set_title('Aperture mask')
         else:
-            fig, axs = None, None
+            fig, im, axs = None, None, None
 
 
-        return aper_fl_mask, aper_err_mask, ap_bool_msk, fig, axs
+        return aper_fl_mask, aper_err_mask, ap_bool_msk, fig, im, axs
     
     
-    def sky_mask(self, rad1=None, rad2=None, brightpix=False, nos_brightest=12, minmax=None, plot=False):
+    def sky_mask(self, plot=False):
         """Create a sky-annulus mask (and masked frame/error arrays).
 
-        When ``brightpix`` is False this builds a circular annulus defined by
-        ``rad1`` (inner radius) and ``rad2`` (outer radius) around the median
-        centroid position. When ``brightpix`` is True the function instead
-        selects the ``nos_brightest`` brightest pixels (optionally limited
-        by ``minmax``) to define the aperture, and rest of the pixels as background.
+        When ``self.brightpix`` is False this builds a circular annulus defined by
+        ``self.sky_rad1`` (inner radius) and ``self.sky_rad2`` (outer radius) around 
+        the median centroid position. When ``self.brightpix`` is True the function instead
+        selects the ``self.nos_brightest`` brightest pixels (optionally limited
+        by ``self.minmax``) to define the aperture, and rest of the pixels as background.
 
         Parameters
         ----------
-        rad1, rad2 : float or None
-            Inner and outer radii (in pixels) of the sky annulus. If omitted
-            and ``brightpix`` is False, an empty (zero) mask is returned.
-        brightpix : bool, optional
-            If True, choose the brightest ``nos_brightest`` pixels to place
-            inside the aperture. The rest of the pixels form sky background. (default False).
-        nos_brightest : int, optional
-            Number of brightest pixels to include in the aperture when 
-            ``brightpix`` is True (default 12).
-        minmax : dict or None, optional
-            Optional bounds used when selecting brightest pixels.
         plot : bool, optional
-            If ``True``, produce a plot of median image with aperture
+            If ``True``, produce a plot of median image with sky mask
             plotted on the top (default ``False``).
 
         Returns
@@ -1974,9 +1986,17 @@ class ApPhoto(object):
             2D binary (0/1) mask describing the sky annulus on a single
             frame (shape ``(Ny, Nx)``).
         fig : matplotlib.figure.Figure or None
-            Figure of median image and aperture mask, if ``plot=True``, otherwise ``None``.
+            Figure of median image and sky mask, if ``plot=True``, otherwise ``None``.
+        im : matplotlib.image.AxesImage or None
+            Image object from the median image plot if ``plot=True``, otherwise ``None``.
         axs : ndarray or None
             Axes of the figure if produced, otherwise ``None``.
+
+        Notes
+        -----
+        Uses instance attributes ``self.sky_rad1``, ``self.sky_rad2``,
+        ``self.brightpix``, ``self.nos_brightest``, and ``self.minmax`` to
+        control sky mask construction.
         """
 
         # Median image
@@ -1985,11 +2005,11 @@ class ApPhoto(object):
         # Now, creating mask
         sky_bool_msk = np.zeros(med_img.shape)
 
-        if ( rad1 == None ) and ( rad2 == None ) and ( not brightpix ):
+        if ( self.sky_rad1 == None ) and ( self.sky_rad2 == None ) and ( not self.brightpix ):
             pass
 
         else:
-            if not brightpix:
+            if not self.brightpix:
                 # Let's first find a distance array which will contain the distance of each pixels from the center
                 idx_arr_r, idx_arr_c = np.meshgrid(np.arange(med_img.shape[0]), np.arange(med_img.shape[1]))
                 idx_arr_r, idx_arr_c = np.transpose(idx_arr_r), np.transpose(idx_arr_c)
@@ -2000,7 +2020,7 @@ class ApPhoto(object):
                 # Distance array would give distace of each pixel from the center
                 distance = np.sqrt(((idx_arr_r - np.nanmedian(self.cen_r))**2) + ((idx_arr_c - np.nanmedian(self.cen_c))**2))
 
-                sky_bool_msk[(distance > rad1)&(distance < rad2)] = 1.
+                sky_bool_msk[(distance > self.sky_rad1)&(distance < self.sky_rad2)] = 1.
             
             else:
                 # Sorting all pixels values; so that we can select first N bright pixels in the aperture
@@ -2008,9 +2028,9 @@ class ApPhoto(object):
                 med_img_sorted = np.sort(med_img_flat)
 
                 # minmax != None
-                if minmax is not None:
-                    rmin, rmax = minmax['rmin'], minmax['rmax']
-                    cmin, cmax = minmax['cmin'], minmax['cmax']
+                if self.minmax is not None:
+                    rmin, rmax = self.minmax['rmin'], self.minmax['rmax']
+                    cmin, cmax = self.minmax['cmin'], self.minmax['cmax']
                 else:
                     rmin, rmax = 0, 10000
                     cmin, cmax = 0, 10000
@@ -2031,7 +2051,7 @@ class ApPhoto(object):
                             sky_bool_msk[ind[0][0], ind[1][0]] = 0.
 
                             ap_pix_nos = ap_pix_nos + 1
-                            if ap_pix_nos>nos_brightest:
+                            if ap_pix_nos>self.nos_brightest:
                                 tot_num = False
                             i = i + 1
 
@@ -2049,11 +2069,11 @@ class ApPhoto(object):
             axs[0].set_title('Median image + Bkg mask')
             axs[1].set_title('Bkg mask')
         else:
-            fig, axs = None, None
+            fig, im, axs = None, None, None
 
-        return sky_fl_mask, sky_err_mask, sky_bool_msk, fig, axs
+        return sky_fl_mask, sky_err_mask, sky_bool_msk, fig, im, axs
     
-    def simple_aperture_photometry(self, rad=None, sky_rad1=None, sky_rad2=None, method='manual', brightpix=False, nos_brightest=12, minmax=None, plot=False, **kwargs):
+    def simple_aperture_photometry(self, method='manual', plot=False, **kwargs):
         """Compute aperture photometry for each frame in the data cube.
 
         The function supports three methods:
@@ -2068,28 +2088,8 @@ class ApPhoto(object):
 
         Parameters
         ----------
-        rad : float or None, optional
-            Aperture radius in pixels for the photometric aperture. Ignored
-            when ``brightpix`` is True.
-        sky_rad1 : float or None, optional
-            Inner radius (pixels) of the sky annulus used to estimate the
-            background. If ``None``, no sky annulus is used (background
-            treated as zero).
-        sky_rad2 : float or None, optional
-            Outer radius (pixels) of the sky annulus used to estimate the
-            background.
         method : {'manual','photutils','median'}, optional
             Photometry method to use. Default is ``'manual'``.
-        brightpix : bool, optional
-            If ``True``, select the brightest ``nos_brightest`` pixels
-            (within optional ``minmax`` bounds) instead of a circular
-            aperture. Default ``False``.
-        nos_brightest : int, optional
-            Number of brightest pixels to include when ``brightpix=True``.
-        minmax : dict or None, optional
-            Optional spatial limits applied when selecting brightest
-            pixels. Expected keys: ``'rmin'``, ``'rmax'``, ``'cmin'``,
-            ``'cmax'``. If not provided the full frame is considered.
         plot : bool, optional
             If ``True``, produce a plot of aperture photometry, flux vs time (default ``False``).
         **kwargs : dict
@@ -2111,7 +2111,7 @@ class ApPhoto(object):
             each frame. For methods that do not estimate a sky background
             this will be zeros.
         fig : matplotlib.figure.Figure or None
-            Figure of median image and aperture mask, if ``plot=True``, otherwise ``None``.
+            Figure of aperture photometry vs time, if ``plot=True``, otherwise ``None``.
         axs : ndarray or None
             Axes of the figure if produced, otherwise ``None``.
 
@@ -2120,6 +2120,9 @@ class ApPhoto(object):
         - The function expects centroids to be available as
           ``self.cen_r`` and ``self.cen_c`` (one per frame) before being
           called.
+        - Uses instance attributes ``self.aprad``, ``self.sky_rad1``,
+          ``self.sky_rad2``, ``self.brightpix``, ``self.nos_brightest``,
+          and ``self.minmax`` to control aperture and background extraction.
         - When using ``photutils``, this routine constructs
           ``CircularAperture``/``CircularAnnulus`` objects per frame and
           uses ``ApertureStats`` and ``aperture_photometry``; errors are
@@ -2129,9 +2132,9 @@ class ApPhoto(object):
         
         if method == 'manual':
             # Let's first obtain sky background flux per pixel (If sky radii are not None)
-            sky_fl_mask, sky_err_mask, sky_bool_mask, _, _ = self.sky_mask(rad1=sky_rad1, rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
+            sky_fl_mask, sky_err_mask, sky_bool_mask, _, _, _ = self.sky_mask()
             # Now, the aperture flux
-            aper_fl_mask, aper_err_mask, ap_bool_mask, _, _ = self.aperture_mask(rad=rad, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
+            aper_fl_mask, aper_err_mask, ap_bool_mask, _, _, _ = self.aperture_mask()
 
             ## Expression of Sky flux per pixel and sky error per pixel
             if np.nansum(sky_bool_mask) != 0:
@@ -2150,15 +2153,15 @@ class ApPhoto(object):
 
             for t in tqdm(range(len(self.ap_flux))):
                 # First let's perform the background subtraction
-                if (sky_rad1 == None) and (sky_rad2 == None):
+                if (self.sky_rad1 == None) and (self.sky_rad2 == None):
                     bkg_mean, bkg_std = 0., 0.
                 else:
-                    sky_aper = CircularAnnulus((int(self.cen_c[t]), int(self.cen_r[t])), r_in=sky_rad1, r_out=sky_rad2)
+                    sky_aper = CircularAnnulus((int(self.cen_c[t]), int(self.cen_r[t])), r_in=self.sky_rad1, r_out=self.sky_rad2)
                     sky_aperstats = ApertureStats(self.frames[t,:,:], sky_aper, **kwargs)
                     bkg_mean, bkg_std = sky_aperstats.mean , sky_aperstats.std   # Mean sky background per pixel
                 
                 # Now computing the aperture flux
-                circ_aper = CircularAperture((self.cen_c[t], self.cen_r[t]), r=rad)
+                circ_aper = CircularAperture((self.cen_c[t], self.cen_r[t]), r=self.aprad)
                 ap_phot = aphot(data=self.frames[t,:,:], apertures=circ_aper, error=self.errors[t,:,:], **kwargs)
                 total_sky_bkg = bkg_mean * circ_aper.area_overlap(self.frames[t,:,:], **kwargs)
                 phot_bkgsub = ap_phot['aperture_sum'] - total_sky_bkg  # Background subtraction
@@ -2171,7 +2174,7 @@ class ApPhoto(object):
                 tot_sky_bkg[t] = total_sky_bkg
 
         elif method == 'median':
-            aper_fl_mask, aper_err_mask, ap_bool_mask, _, _ = self.aperture_mask(rad=rad, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
+            aper_fl_mask, aper_err_mask, ap_bool_mask, _, _, _ = self.aperture_mask()
             tot_sky_bkg = np.zeros(aper_fl_mask.shape[0])
             aper_fl_mask[aper_fl_mask == 0.] = np.nan
             ap_flux, ap_flux_err = np.nanmedian(aper_fl_mask, axis=(1,2)), np.sqrt( np.nanmedian( aper_fl_mask, axis=(1,2) ) )
@@ -2237,7 +2240,8 @@ class ApPhoto(object):
             raise ValueError("Method should be one of 'pipe', 'std', 'rms', or 'astropy'.")
         
         for r in tqdm(range(len(radii))):
-            ap_fl, _, _, _, _ = self.simple_aperture_photometry(rad=radii[r], **kwargs)
+            self.aprad = radii[r]
+            ap_fl, _, _, _, _ = self.simple_aperture_photometry(**kwargs)
             ap_flux_radii[r] = np.nanmedian( ap_fl )
             noise_radii[r] = noise_func( ap_fl / np.nanmedian( ap_fl ) ) * 1e6
 
@@ -2268,7 +2272,7 @@ class ApPhoto(object):
 
         return ap_flux_radii, noise_radii, fig, [axs1, axs2]
     
-    def pixel_level_decorrelation(self, rad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, minmax=None, removeNan=False):
+    def pixel_level_decorrelation(self, removeNan=False):
         """Prepare pixel-level decorrelation (PLD) basis functions.
 
         The method builds the normalized pixel-level light curves (Phat) inside
@@ -2278,21 +2282,6 @@ class ApPhoto(object):
 
         Parameters
         ----------
-        rad : float or None
-            Aperture radius (pixels) used to define which pixels belong to
-            the photometric aperture. Ignored when ``brightpix`` is True.
-        sky_rad1, sky_rad2 : float, optional
-            Inner and outer radii of the sky annulus used to estimate
-            background to subtract from pixel fluxes. If ``None``, no sky 
-            annulus is used (background treated as zero).
-        brightpix : bool, optional
-            If ``True``, choose the brightest pixels rather than using a
-            circular aperture.
-        nos_brightest : int, optional
-            Number of brightest pixels to include when ``brightpix=True``.
-        minmax : dict or None, optional
-            Optional region limits used when selecting brightest pixels
-            (keys: 'rmin','rmax','cmin','cmax').
         removeNan : bool, optional
             If ``True``, remove frames that contain NaNs in the basis
             before performing PCA.
@@ -2306,8 +2295,8 @@ class ApPhoto(object):
         PCA : ndarray
             Projected PCA time-series (shape: n_components, n_frames).
         """
-        _, _, self.ap_bool_mask_pld, _, _ = self.aperture_mask(rad=rad, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
-        sky_fl, _, sky_bool, _, _ = self.sky_mask(rad1=sky_rad1, rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
+        _, _, self.ap_bool_mask_pld, _, _, _ = self.aperture_mask()
+        sky_fl, _, sky_bool, _, _, _ = self.sky_mask()
 
         if np.nansum(sky_bool) == 0.:
             sky_bkg_per_pix = 0.
