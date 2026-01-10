@@ -1639,6 +1639,9 @@ class ApPhoto(object):
     nos_brightest : int, optional
         Number of brightest pixels to include in aperture when ``brightpix=True``.
         Default ``12``.
+    nos_faintest : int, optional
+        Number of faintest pixels to include in background aperture when it is not None and ``brightpix=True``.
+        When None, all pixels that are not in aperture are included. Default is ``None``.
     minmax : dict or None, optional
         Optional spatial bounds for brightest pixel selection with keys
         'rmin', 'rmax', 'cmin', 'cmax'. Default is ``None``.
@@ -1676,7 +1679,7 @@ class ApPhoto(object):
     subsequent calls; many methods modify the instance in-place and
     also return results for convenience.
     """
-    def __init__(self, times, frames, errors, badpix, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, minmax=None):
+    def __init__(self, times, frames, errors, badpix, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, nos_faintest=None, minmax=None):
         # The data
         self.times = times
         self.frames = frames
@@ -1688,6 +1691,7 @@ class ApPhoto(object):
         self.sky_rad1, self.sky_rad2 = sky_rad1, sky_rad2
         self.brightpix = brightpix
         self.nos_brightest = nos_brightest
+        self.nos_faintest = nos_faintest
         self.minmax = minmax
 
         if ( self.aprad == None ) and ( not self.brightpix ):
@@ -2031,7 +2035,7 @@ class ApPhoto(object):
             pass
 
         else:
-            if not self.brightpix:
+            if ( not self.brightpix ) or ( ( self.sky_rad1 != None ) and ( self.sky_rad2 != None ) ):
                 # Let's first find a distance array which will contain the distance of each pixels from the center
                 idx_arr_r, idx_arr_c = np.meshgrid(np.arange(med_img.shape[0]), np.arange(med_img.shape[1]))
                 idx_arr_r, idx_arr_c = np.transpose(idx_arr_r), np.transpose(idx_arr_c)
@@ -2057,25 +2061,48 @@ class ApPhoto(object):
                     rmin, rmax = 0, 10000
                     cmin, cmax = 0, 10000
 
-                tot_num = True
-                ap_pix_nos, i = 0, 0
-                while tot_num:
-                    if np.isnan(med_img_sorted[-1-i]):
-                        i = i + 1
-                        continue
-                    else:
-                        ind = np.where(med_img == med_img_sorted[-1-i])
-                        # To prevent aperture being far from the center
-                        if (ind[0][0] > rmax) or (ind[0][0] < rmin) or (ind[1][0] < cmin) or (ind[1][0] > cmax):
+                if self.nos_faintest == None:
+                    sky_bool_msk = np.ones(med_img.shape)
+                    tot_num = True
+                    ap_pix_nos, i = 0, 0
+                    while tot_num:
+                        if np.isnan(med_img_sorted[-1-i]):
                             i = i + 1
                             continue
                         else:
-                            sky_bool_msk[ind[0][0], ind[1][0]] = 0.
+                            ind = np.where(med_img == med_img_sorted[-1-i])
+                            # To prevent aperture being far from the center
+                            if (ind[0][0] > rmax) or (ind[0][0] < rmin) or (ind[1][0] < cmin) or (ind[1][0] > cmax):
+                                i = i + 1
+                                continue
+                            else:
+                                sky_bool_msk[ind[0][0], ind[1][0]] = 0.
 
-                            ap_pix_nos = ap_pix_nos + 1
-                            if ap_pix_nos>self.nos_brightest:
-                                tot_num = False
+                                ap_pix_nos = ap_pix_nos + 1
+                                if ap_pix_nos>self.nos_brightest:
+                                    tot_num = False
+                                i = i + 1
+                else:
+                    sky_bool_msk = np.zeros(med_img.shape)
+                    tot_num = True
+                    ap_pix_nos, i = 0, 0
+                    while tot_num:
+                        if np.isnan(med_img_sorted[i]):
                             i = i + 1
+                            continue
+                        else:
+                            ind = np.where(med_img == med_img_sorted[i])
+                            # To prevent aperture being far from the center
+                            if (ind[0][0] < rmax) and (ind[0][0] > rmin) and (ind[1][0] > cmin) and (ind[1][0] < cmax):
+                                i = i + 1
+                                continue
+                            else:
+                                sky_bool_msk[ind[0][0], ind[1][0]] = 1.
+
+                                ap_pix_nos = ap_pix_nos + 1
+                                if ap_pix_nos>self.nos_faintest:
+                                    tot_num = False
+                                i = i + 1
 
         # And, sky mask
         sky_fl_mask, sky_err_mask = self.frames * sky_bool_msk[None, :, :], self.errors * sky_bool_msk[None, :, :]
@@ -2095,7 +2122,7 @@ class ApPhoto(object):
 
         return sky_fl_mask, sky_err_mask, sky_bool_msk, fig, im, axs
     
-    def simple_aperture_photometry(self, method='manual', plot=False, **kwargs):
+    def simple_aperture_photometry(self, method='manual', plot=False, bkg_corr='mean', robust_err=False, **kwargs):
         """Compute aperture photometry for each frame in the data cube.
 
         The function supports three methods:
@@ -2114,6 +2141,11 @@ class ApPhoto(object):
             Photometry method to use. Default is ``'manual'``.
         plot : bool, optional
             If ``True``, produce a plot of aperture photometry, flux vs time (default ``False``).
+        bkg_corr : str, optional
+            The method to compute sky background flux, can be either mean or median. Default is ``mean``.
+        robust_err : bool, optional
+            Computes robust errors on aperture photometry by including scatter in sky background flux.
+            Default is ``False``.
         **kwargs : dict
             Additional keyword arguments forwarded to ``photutils``
             routines when ``method='photutils'`` (for example, custom
@@ -2160,8 +2192,26 @@ class ApPhoto(object):
 
             ## Expression of Sky flux per pixel and sky error per pixel
             if np.nansum(sky_bool_mask) != 0:
-                sky_flx_per_pix = np.nansum(sky_fl_mask, axis=(1,2)) / np.nansum(sky_bool_mask)
+                # --------------------- First, calculate the mean sky flux per pix
+                if bkg_corr == 'mean':
+                    sky_flx_per_pix = np.nansum(sky_fl_mask, axis=(1,2)) / np.nansum(sky_bool_mask)
+                elif bkg_corr == 'median':
+                    # Replacing 0s with Nan, so that they don't interfere with median computation
+                    sky_fl_mask12 = np.copy( sky_fl_mask )
+                    sky_fl_mask12[ sky_fl_mask12 == 0. ] = np.nan
+
+                    sky_flx_per_pix = np.nanmedian( sky_fl_mask12, axis=(1,2) )
+                else:
+                    raise Exception('The background can be computed either using mean or median.')
+                
+                # --------------------- And, now, errors on the mean sky flux per pix
                 sky_flx_err_per_pix = np.sqrt( np.nansum( sky_err_mask**2, axis=(1,2) ) ) / np.nansum(sky_bool_mask)
+                if robust_err:
+                    # Replacing 0s with Nan, so that they don't interfere with std computation
+                    sky_fl_mask12 = np.copy( sky_fl_mask )
+                    sky_fl_mask12[ sky_fl_mask12 == 0. ] = np.nan
+                    
+                    sky_flx_err_per_pix = np.sqrt( sky_flx_err_per_pix**2 + ( np.nanstd( sky_fl_mask12, axis=(1,2) ) )**2 )
             else:
                 sky_flx_per_pix, sky_flx_err_per_pix = 0., 0.
 
@@ -2173,14 +2223,19 @@ class ApPhoto(object):
 
             ap_flux, ap_flux_err, tot_sky_bkg = np.zeros( self.frames.shape[0] ), np.zeros( self.frames.shape[0] ), np.zeros( self.frames.shape[0] )
 
-            for t in tqdm(range(len(self.ap_flux))):
+            for t in range(len(ap_flux)):
                 # First let's perform the background subtraction
                 if (self.sky_rad1 == None) and (self.sky_rad2 == None):
                     bkg_mean, bkg_std = 0., 0.
                 else:
                     sky_aper = CircularAnnulus((int(self.cen_c[t]), int(self.cen_r[t])), r_in=self.sky_rad1, r_out=self.sky_rad2)
                     sky_aperstats = ApertureStats(self.frames[t,:,:], sky_aper, **kwargs)
-                    bkg_mean, bkg_std = sky_aperstats.mean , sky_aperstats.std   # Mean sky background per pixel
+                    if bkg_corr == 'mean':
+                        bkg_mean, bkg_std = sky_aperstats.mean, sky_aperstats.std   # Mean sky background per pixel
+                    elif bkg_corr == 'median':
+                        bkg_mean, bkg_std = sky_aperstats.median, sky_aperstats.std   # Mean sky background per pixel
+                    else:
+                        raise Exception('The background can be computed either using mean or median.')
                 
                 # Now computing the aperture flux
                 circ_aper = CircularAperture((self.cen_c[t], self.cen_r[t]), r=self.aprad)
@@ -2202,7 +2257,7 @@ class ApPhoto(object):
             ap_flux, ap_flux_err = np.nanmedian(aper_fl_mask, axis=(1,2)), np.sqrt( np.nanmedian( aper_fl_mask, axis=(1,2) ) )
         
         else:
-            raise Exception('Please enter correct method...\nMethod can either be manual or photutils.')
+            raise Exception('Please enter correct method...\nMethod can either be manual, photutils, or median.')
         
         if plot:
             fig, axs = plt.subplots()
@@ -2262,7 +2317,10 @@ class ApPhoto(object):
             raise ValueError("Method should be one of 'pipe', 'std', 'rms', or 'astropy'.")
         
         for r in tqdm(range(len(radii))):
-            self.aprad = radii[r]
+            if not self.brightpix:
+                self.aprad = radii[r]
+            else:
+                self.nos_brightest = radii[r]
             ap_fl, _, _, _, _ = self.simple_aperture_photometry(**kwargs)
             ap_flux_radii[r] = np.nanmedian( ap_fl )
             noise_radii[r] = noise_func( ap_fl / np.nanmedian( ap_fl ) ) * 1e6
@@ -2687,6 +2745,6 @@ class TESSData(object):
                 self.quality[sec_name] = data_sector['QUALITY']
                 self.badpix[sec_name] = data_sector['BADPIX']
 
-    def ApPhoto(self, sector, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, minmax=None):
+    def ApPhoto(self, sector, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, nos_faintest=None, minmax=None):
         return ApPhoto(times=self.tim_tpf[sector], frames=self.fl_tpf[sector], errors=self.fle_tpf[sector], badpix=self.badpix[sector],\
-                       aprad=aprad, sky_rad1=sky_rad1, sky_rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, minmax=minmax)
+                       aprad=aprad, sky_rad1=sky_rad1, sky_rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, nos_faintest=nos_faintest, minmax=minmax)
