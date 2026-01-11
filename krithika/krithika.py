@@ -6,6 +6,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import mad_std
 from scipy.interpolate import interp1d
+from pathlib import Path
 from glob import glob
 from tqdm import tqdm
 import plotstyles
@@ -2699,7 +2700,7 @@ class TESSData(object):
                 fname.close()
         return self.tim_lc, self.fl_lc, self.fle_lc, self.out_dict_lc
 
-    def get_tpfs(self, pout=None, load=False, save=False):
+    def get_tpfs(self, pout=None, load=False, save=False, savefits=False):
         """Download or load TESS Target Pixel Files (TPFs) for the target.
 
         If ``load`` is False the method queries MAST for TESS time-series
@@ -2723,6 +2724,9 @@ class TESSData(object):
         save : bool, optional
             If True save extracted per-sector dictionaries as
             ``TPF_<object>_<sector>.pkl`` in ``pout``. Default ``False``.
+        savefits : bool, optional
+            If True, save the downloaded fits files in pout folder.
+            Default is False.
 
         Returns
         -------
@@ -2815,7 +2819,12 @@ class TESSData(object):
                     ## And saving them
                     pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_' + sec_tess + '.pkl','wb') )
             
-            os.system('rm -rf mastDownload')
+            if not savefits:
+                os.system('rm -rf mastDownload')
+            else:
+                if not Path(pout + '/TPF_' + self.object_name + '_fits').exists():
+                    os.mkdir(pout + '/TPF_' + self.object_name + '_fits')
+                os.system('mv ' + os.getcwd() + lpt + ' ' + pout + '/TPF_' + self.object_name + '_fits')
         else:
             fnames = glob(pout + '/TPF_' + self.object_name + '_TESS*.pkl')
             
