@@ -2625,10 +2625,67 @@ class ApPhoto(object):
     
 
 class TESSData(object):
+    """Helper to query and fetch TESS products from MAST and juliet.
+
+    This lightweight utility class provides two convenience methods:
+    ``get_lightcurves`` which delegates to ``juliet.utils.get_all_TESS_data``
+    (when available) to gather per-instrument light curves, and
+    ``get_tpfs`` which queries MAST for Target Pixel Files (TPFs),
+    downloads the products and populates simple dictionaries on the
+    instance with the extracted time and pixel-cube data.
+
+    Parameters
+    ----------
+    object_name : str
+        Target identifier accepted by MAST (for example a TIC or common
+        object name).
+
+    Attributes
+    ----------
+    object_name : str
+        The provided target name.
+    tim_lc, fl_lc, fle_lc : dict or None
+        Time/flux/flux-error collections populated by
+        ``get_lightcurves`` when that method is called.
+    out_dict_lc : object or None
+        Optional output dictionary returned by the juliet helper.
+    tim_tpf, fl_tpf, fle_tpf, badpix, quality : dict
+        Dictionaries populated by :meth:`get_tpfs` containing per-sector
+        time arrays, pixel flux cubes, pixel flux error cubes, bad-pixel
+        masks and quality arrays respectively.
+    """
+
     def __init__(self, object_name):
         self.object_name = object_name
 
     def get_lightcurves(self, pdc=True, save=False, pout=None, **kwargs):
+        """Collect TESS light curves for ``self.object_name``.
+
+        This method attempts to use ``juliet.utils.get_all_TESS_data`` to
+        retrieve light curves. The juliet helper may return either a
+        simple tuple ``(tim, fl, fle)`` or an (out_dict, tim, fl, fle)
+        tuple; both cases are handled and stored on the instance.
+
+        Parameters
+        ----------
+        pdc : bool, optional
+            If True request PDC-corrected fluxes when available. Default
+            is ``True``.
+        save : bool, optional
+            If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
+            to ``pout``. Default ``False``.
+        pout : str or None, optional
+            Output directory used when ``save=True`` (defaults to the
+            current working directory if ``None``).
+        **kwargs : dict
+            Forwarded to ``juliet.utils.get_all_TESS_data``.
+
+        Returns
+        -------
+        tim_lc, fl_lc, fle_lc, out_dict_lc : tuple
+            Stored time/flux/fluxerr containers and an optional output
+            dictionary (``out_dict_lc`` may be ``None``).
+        """
         try:
             self.tim_lc, self.fl_lc, self.fle_lc = juliet.utils.get_all_TESS_data(object_name=self.object_name, get_PDC=pdc, **kwargs)
             self.out_dict_lc = None
@@ -2643,6 +2700,37 @@ class TESSData(object):
         return self.tim_lc, self.fl_lc, self.fle_lc, self.out_dict_lc
 
     def get_tpfs(self, pout=None, load=False, save=False):
+        """Download or load TESS Target Pixel Files (TPFs) for the target.
+
+        If ``load`` is False the method queries MAST for TESS time-series
+        products for ``self.object_name``, filters suitable products
+        (TPFs), downloads them, reads the FITS tables and populates the
+        instance dictionaries ``tim_tpf``, ``fl_tpf``, ``fle_tpf``,
+        ``quality`` and ``badpix``. If ``save`` is True a small pickled
+        dictionary per sector is written to ``pout``. ``load=True`` simply
+        reads these previously saved dictionaries.
+
+        Parameters
+        ----------
+        pout : str or None
+            Output directory used when ``save=True``. If ``None`` the
+            current working directory is used.
+        load : bool, optional
+            If True, attempt to load previously saved TPF pickles instead
+            of querying/downloading from MAST. (Loading logic is not
+            implemented in this helper; calling with ``load=True`` will
+            bypass the MAST query branch.)
+        save : bool, optional
+            If True save extracted per-sector dictionaries as
+            ``TPF_<object>_<sector>.pkl`` in ``pout``. Default ``False``.
+
+        Returns
+        -------
+        tim_tpf, fl_tpf, fle_tpf, badpix, quality : tuple
+            The dictionaries populated on the instance containing the
+            per-sector time arrays, pixel flux cubes, flux error cubes,
+            quality arrays and a placeholder bad-pixel mask.
+        """
         if not load:
             try:
                 obt = Observations.query_object(self.object_name, radius=0.01)
