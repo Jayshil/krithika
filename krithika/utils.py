@@ -480,3 +480,59 @@ def classic_PCA(Input_Data, standarize = True):
     eigenvectors_rows = eigenvectors_rows[idx[::-1],:]
     # Return: V matrix, eigenvalues and the principal components.
     return eigenvectors_rows,eigenvalues,np.dot(eigenvectors_rows,Data)
+
+def generate_times_with_gaps(times, efficiency):
+    """This function takes the times array with a regular cadence and generate
+    another times array with data gaps in it with a given efficiency to mimick
+    CHEOPS observations. Efficiency here is the fraction of the actual time spent 
+    on the star.
+    
+    Parameters
+    ----------
+    times : numpy.ndarray
+        Regularly spaced time array
+    efficiency : float
+        Efficiency of the observations in per cent.
+        
+    Returns
+    -------
+    tim : numpy.ndarray
+        Time array with gaps in it.
+    roll : numpy.ndarray
+        The corresponding roll angle array.
+    """
+    # Generating gappy times
+    ## Computing total number of orbits in the data
+    cheops_orbit_time_day = 98.77 / (60 * 24)
+    orbit_nos = np.ptp(times) / cheops_orbit_time_day
+
+    ## Generating roll numbers
+    roll = np.linspace(0, orbit_nos*360, len(times)) + np.random.randint(0,360)
+    roll = roll % 360
+    idx_rollsort = np.argsort(roll)
+    roll_rollsort = roll[idx_rollsort]
+    tim_rollsort = times[idx_rollsort]
+
+    ## Selecting the range of roll-angles to discard
+    st_roll = np.random.choice(roll_rollsort)    # Starting roll number of discarded roll angles
+    loc_st_roll = np.where(roll_rollsort == st_roll)[0][0]
+    nos_discarded_pts = int((1 - (0.01 * efficiency)) * len(times)) # Total number of discarded points
+    idx_discarded = np.ones(len(times), dtype=bool)
+
+    if int(loc_st_roll+nos_discarded_pts) > len(times):
+        # Roll over the starting roll numbers
+        idx_discarded[loc_st_roll:] = False
+        dis_pt = len(times) - loc_st_roll
+        idx_discarded[0:nos_discarded_pts-dis_pt] = False
+    else:
+        idx_discarded[loc_st_roll:loc_st_roll + nos_discarded_pts] = False
+
+    # Let's actually discard the points now
+    tim = tim_rollsort[idx_discarded]
+    roll = roll_rollsort[idx_discarded]
+
+    # And sort them
+    idx_timsort = np.argsort(tim)
+    tim, roll = tim[idx_timsort], roll[idx_timsort]
+
+    return tim, roll
