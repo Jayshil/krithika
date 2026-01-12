@@ -2395,13 +2395,22 @@ class ApPhoto(object):
         self.Phat = pixel_fluxes / self.Psum[:, None]
 
         if removeNan:
-            id0, id1 = np.where(np.isnan(self.Phat))
-            idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
-            idx_nan[id0] = False
-            self.Phat = self.Phat[idx_nan, :]
-            self.times = self.times[idx_nan]
+            id0, _ = np.where(np.isnan(self.Phat))
+            self.idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
+            self.idx_nan[id0] = False
+            
+            self.Phat = self.Phat[self.idx_nan, :]
+            self.times = self.times[self.idx_nan]
+            self.Psum = self.Psum[self.idx_nan]
+
+            self.idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
+            id0 = np.where( self.Psum == 0. )
+            self.idx_nan[id0] = False
+            self.Phat, self.Psum = self.Phat[self.idx_nan, :], self.Psum[self.idx_nan]
+            self.times = self.times[self.idx_nan]
+
         else:
-            idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
+            self.idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
 
         self.V, self.eigenvalues, self.PCA = utils.classic_PCA(self.Phat.T)
 
