@@ -2819,14 +2819,314 @@ class TESSData(object):
                     ## And saving them
                     pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_' + sec_tess + '.pkl','wb') )
             
-            if not savefits:
-                os.system('rm -rf mastDownload')
-            else:
-                if not Path(pout + '/TPF_' + self.object_name + '_fits').exists():
-                    os.mkdir(pout + '/TPF_' + self.object_name + '_fits')
-                os.system('mv ' + os.getcwd() + lpt + ' ' + pout + '/TPF_' + self.object_name + '_fits')
+                if savefits:
+                    if not Path(pout + '/TPF_' + self.object_name + '_fits').exists():
+                        os.mkdir(pout + '/TPF_' + self.object_name + '_fits')
+                    os.system('mv ' + os.getcwd() + lpt + ' ' + pout + '/TPF_' + self.object_name + '_fits/')
+            
+            # Delete the folder in the end
+            os.system('rm -rf mastDownload')
+
         else:
             fnames = glob(pout + '/TPF_' + self.object_name + '_TESS*.pkl')
+            
+            # Dictionaries for saving the data in self
+            self.tim_tpf, self.fl_tpf, self.fle_tpf, self.badpix, self.quality = {}, {}, {}, {}, {}
+            for i in range(len(fnames)):
+                data_sector = pickle.load( open( fnames[i], 'rb' ) )
+
+                ## Sector name
+                sec_name = fnames[i].split('/')[-1].split('.')[0].split('_')[-1]
+
+                ## Loading the data
+                self.tim_tpf[sec_name] = data_sector['TIME']
+                self.fl_tpf[sec_name], self.fle_tpf[sec_name] = data_sector['FLUX'], data_sector['FLUX_ERR']
+                self.quality[sec_name] = data_sector['QUALITY']
+                self.badpix[sec_name] = data_sector['BADPIX']
+
+    def ApPhoto(self, sector, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, nos_faintest=None, minmax=None):
+        return ApPhoto(times=self.tim_tpf[sector], frames=self.fl_tpf[sector], errors=self.fle_tpf[sector], badpix=self.badpix[sector],\
+                       aprad=aprad, sky_rad1=sky_rad1, sky_rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, nos_faintest=nos_faintest, minmax=minmax)
+
+
+class KeplerData(object):
+    def __init__(self, object_name):
+        self.object_name = object_name
+    
+    def get_lightcurves(self, pdc=True, long_cadence=True, verbose=True, save=False, pout=None):
+        """
+        Collect Kepler/K2 light curves for ``self.object_name``.
+
+        This method uses ``astroquery`` to retrieve light curves.
+        The function returns a simple tuple ``(tim, fl, fle)``.
+
+        Parameters
+        ----------
+        pdc : bool, optional
+            If True request PDC-corrected fluxes when available. Default
+            is ``True``.
+        long_cadence : bool, optional
+            If True the long cadence data will be downloaded. Default if False.
+        verbose : bool
+            Boolean on whether to print updates. Default is True
+        save : bool, optional
+            If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
+            to ``pout``. Default ``False``.
+        pout : str or None, optional
+            Output directory used when ``save=True`` (defaults to the
+            current working directory if ``None``).
+        """
+        if ('K2' in self.object_name) and (not long_cadence):
+            raise Exception('No Short Cadence data available for K2 objects.')
+        try:
+            obt = Observations.query_object(self.object_name, radius=0.001)
+        except:
+            raise Exception('The name of the object does not seem to be correct.\nPlease try again...')
+        
+        # b contains indices of the timeseries observations from TESS
+        b = np.array([])
+        for j in range(len(obt['intentType'])):
+            if (obt['obs_collection'][j] == 'Kepler' or obt['obs_collection'][j] == 'K2') and obt['dataproduct_type'][j] == 'timeseries':
+                b = np.hstack((b,j))
+        
+        if len(b) == 0:
+            raise Exception('No Kepler/K2 timeseries data available for this target.\nTry another target...')
+        
+        # To extract obs-id from the observation table
+        pi_name, obsids, exptime, scad, lcad = np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+        for i in range(len(b)):
+            data1 = obt['dataURL'][int(b[i])]
+            if 'lc' in data1.split('_'):
+                lcad = np.hstack((lcad, b[i]))
+            if 'sc' in data1.split('_'):
+                scad = np.hstack((scad, b[i]))
+            if 'llc.fits' in data1.split('_'):
+                lcad = np.hstack((lcad, b[i]))
+            pi_nm = obt['proposal_pi'][int(b[i])]
+            if type(pi_nm) != str:
+                pi_nm = 'K2 Team'
+            pi_name = np.hstack((pi_name, pi_nm))
+        
+        if long_cadence:
+            dwn_b = lcad
+            keywd = 'Lightcurve Long Cadence'
+        else:
+            dwn_b = scad
+            keywd = 'Lightcurve Short Cadence'
+        
+        for i in range(len(dwn_b)):
+            obsids = np.hstack((obsids, obt['obsid'][int(dwn_b[i])]))
+            exptime = np.hstack((exptime, obt['t_exptime'][int(dwn_b[i])]))
+        
+        disp_kic, disp_sec = [], []
+        
+        # Directory to save the data
+        self.tim_lc, self.fl_lc, self.fle_lc = {}, {}, {}
+
+        for i in range(len(dwn_b)):
+            dpr = Observations.get_product_list(obt[int(dwn_b[i])])
+            cij = []
+            for j in range(len(dpr['obsID'])):
+                if keywd in dpr['description'][j]:
+                    cij.append(j)
+            if verbose:
+                print('Data products found over ' + str(len(cij)) + ' quarters/cycles.')
+                print('Downloading them...')
+            for j in range(len(cij)):
+                sector = f"{i:02}" + f"{j:02}" + '-' + dpr['description'][cij[j]].split('- ')[1]
+                
+                # Downloading the data
+                tab = Observations.download_products(dpr[cij[j]])
+                lpt = tab['Local Path'][0][1:]
+                # Reading fits
+                hdul = fits.open(os.getcwd() + lpt)
+                hdr = hdul[0].header
+                kicid = int(hdr['KEPLERID'])
+                kicid = f"{kicid:010}"
+                dta = Table.read(hdul[1])
+                # Available data products
+                try:
+                    if pdc:
+                        fl = np.asarray(dta['PDCSAP_FLUX'])
+                        fle = np.asarray(dta['PDCSAP_FLUX_ERR'])
+                    else:
+                        fl = np.asarray(dta['SAP_FLUX'])
+                        fle = np.asarray(dta['SAP_FLUX_ERR'])
+                except:
+                    continue
+
+                mask = np.isfinite(fl)                                # Creating Mask to remove Nans
+                bjd1 = np.asarray(dta['TIME'])[mask] + hdul[1].header['BJDREFI']
+                fl, fle = fl[mask], fle[mask]                         # Flux and Error in flux without Nans
+
+                self.tim_lc[sector], self.fl_lc[sector], self.fle_lc[sector] = bjd1, fl / np.nanmedian(fl), fle / np.nanmedian(fl)
+                
+                disp_kic.append(kicid)
+                disp_sec.append(sector)
+
+        if verbose:
+            print('----------------------------------------------------------------------------------------')
+            print('Name\t\tKIC-id\t\tSector')
+            print('----------------------------------------------------------------------------------------')
+            for i in range(len(disp_kic)):
+                print(self.object_name + '\t\t' + disp_kic[i] + '\t\t' + disp_sec[i])
+
+        if save:
+            for ins in self.tim_lc.keys():
+                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '.dat', 'w' )
+                for t in range( len(self.tim_lc[ins]) ):
+                    fname.write( str( self.tim_lc[ins][t] ) + '\t' + str( self.fl_lc[ins][t] ) + '\t' + str( self.fle_lc[ins][t] ) + '\n' )
+                fname.close()
+
+        # Deleting the data
+        os.system('rm -rf mastDownload')
+
+        return self.tim_lc, self.fl_lc, self.fle_lc
+    
+    def get_tpfs(self, long_cadence=True, load=False, verbose=True, save=False, pout=None, savefits=False):
+        """
+        Collect Kepler/K2 target pixel files for ``self.object_name``.
+
+        This method uses ``astroquery`` to retrieve target pixel files.
+
+        Parameters
+        ----------
+        load : bool, optional
+            If True request PDC-corrected fluxes when available. Default
+            is ``True``.
+        long_cadence : bool, optional
+            If True the long cadence data will be downloaded. Default if False.
+        verbose : bool
+            Boolean on whether to print updates. Default is True
+        save : bool, optional
+            If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
+            to ``pout``. Default ``False``.
+        pout : str or None, optional
+            Output directory used when ``save=True`` (defaults to the
+            current working directory if ``None``).
+        """
+        if not load:
+            if ('K2' in self.object_name) and (not long_cadence):
+                raise Exception('No Short Cadence data available for K2 objects.')
+            try:
+                obt = Observations.query_object(self.object_name, radius=0.001)
+            except:
+                raise Exception('The name of the object does not seem to be correct.\nPlease try again...')
+            
+            # b contains indices of the timeseries observations from TESS
+            b = np.array([])
+            for j in range(len(obt['intentType'])):
+                if (obt['obs_collection'][j] == 'Kepler' or obt['obs_collection'][j] == 'K2') and obt['dataproduct_type'][j] == 'timeseries':
+                    b = np.hstack((b,j))
+            
+            if len(b) == 0:
+                raise Exception('No Kepler/K2 timeseries data available for this target.\nTry another target...')
+            
+            # To extract obs-id from the observation table
+            pi_name, obsids, exptime, scad, lcad = np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+            for i in range(len(b)):
+                data1 = obt['dataURL'][int(b[i])]
+                if 'lc' in data1.split('_'):
+                    lcad = np.hstack((lcad, b[i]))
+                if 'sc' in data1.split('_'):
+                    scad = np.hstack((scad, b[i]))
+                if 'llc.fits' in data1.split('_'):
+                    lcad = np.hstack((lcad, b[i]))
+                if 'slc.fits' in data1.split('_'):
+                    scad = np.hstack((scad, b[i]))
+                pi_nm = obt['proposal_pi'][int(b[i])]
+                if type(pi_nm) != str:
+                    pi_nm = 'K2 Team'
+                pi_name = np.hstack((pi_name, pi_nm))
+            
+            if long_cadence:
+                dwn_b = lcad
+                keywd = 'Target Pixel Long Cadence'
+            else:
+                dwn_b = scad
+                keywd = 'Target Pixel Short Cadence'
+            
+            for i in range(len(dwn_b)):
+                obsids = np.hstack((obsids, obt['obsid'][int(dwn_b[i])]))
+                exptime = np.hstack((exptime, obt['t_exptime'][int(dwn_b[i])]))
+            
+            disp_kic, disp_sec = [], []
+            
+            # Dictionaries to save the data
+            self.tim_tpf, self.fl_tpf, self.fle_tpf, self.badpix, self.quality = {}, {}, {}, {}, {}
+
+            for i in range(len(dwn_b)):
+                dpr = Observations.get_product_list(obt[int(dwn_b[i])])
+                cij = []
+                for j in range(len(dpr['obsID'])):
+                    if keywd in dpr['description'][j]:
+                        cij.append(j)
+                if verbose:
+                    print('Data products found over ' + str(len(cij)) + ' quarters/cycles.')
+                    print('Downloading them...')
+
+                for j in range(len(cij)):
+                    sector = f"{i:02}" + f"{j:02}" + '-' + dpr['description'][cij[j]].split('- ')[1]
+                    
+                    # Downloading the data
+                    tab = Observations.download_products(dpr[cij[j]])
+                    lpt = tab['Local Path'][0][1:]
+
+                    # Unzipping the file
+                    os.system('gunzip --keep ' + os.getcwd() + lpt)
+
+                    # Reading fits
+                    hdul = fits.open(os.getcwd() + lpt[:-3])
+                    hdr = hdul[0].header
+                    kicid = int(hdr['KEPLERID'])
+                    kicid = f"{kicid:010}"
+                    dta = Table.read(hdul[1])
+
+                    # Creating a mask array to mask NaN
+                    idx = np.ones( dta['FLUX'].shape[0], dtype=bool )
+                    for t in range( dta['FLUX'].shape[0] ):
+                        nan = np.where( np.isnan( dta['FLUX'][t,:,:] ) )
+                        if len( nan[0] ) == len( dta['FLUX'][t,:,:].flatten() ):
+                            idx[t] = False
+
+                    self.tim_tpf[sector] = dta['TIME'][idx] + hdul[1].header['BJDREFI']
+                    self.fl_tpf[sector], self.fle_tpf[sector] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
+                    self.quality[sector] = dta['QUALITY'][idx]
+                    self.badpix[sector] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
+
+                    if save:
+                        data_sector = {}
+                        data_sector['TIME'] = dta['TIME'][idx] + hdul[1].header['BJDREFI']
+                        data_sector['FLUX'], data_sector['FLUX_ERR'] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
+                        data_sector['QUALITY'] = dta['QUALITY'][idx]
+                        data_sector['BADPIX'] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
+
+                        if pout is None:
+                            pout = os.getcwd()
+
+                        ## And saving them
+                        pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_Kep' + sector + '.pkl','wb') )
+                    
+                    disp_kic.append(kicid)
+                    disp_sec.append(sector)
+
+                    if savefits:
+                        if not Path(pout + '/TPF_' + self.object_name + '_fits').exists():
+                            os.mkdir(pout + '/TPF_' + self.object_name + '_fits')
+                        os.system('mv ' + os.getcwd() + lpt + ' ' + pout + '/TPF_' + self.object_name + '_fits')
+                        os.system('mv ' + os.getcwd() + lpt[:-3] + ' ' + pout + '/TPF_' + self.object_name + '_fits')
+            
+            # Delete the folder in the end
+            os.system('rm -rf mastDownload')
+
+            if verbose:
+                print('----------------------------------------------------------------------------------------')
+                print('Name\t\tKIC-id\t\tSector')
+                print('----------------------------------------------------------------------------------------')
+                for i in range(len(disp_kic)):
+                    print(self.object_name + '\t\t' + disp_kic[i] + '\t\t' + disp_sec[i])
+        else:
+            fnames = glob(pout + '/TPF_' + self.object_name + '_Kep*.pkl')
             
             # Dictionaries for saving the data in self
             self.tim_tpf, self.fl_tpf, self.fle_tpf, self.badpix, self.quality = {}, {}, {}, {}, {}
