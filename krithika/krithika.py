@@ -2668,7 +2668,7 @@ class TESSData(object):
     def __init__(self, object_name):
         self.object_name = object_name
 
-    def get_lightcurves(self, pdc=True, save=False, pout=None, **kwargs):
+    def get_lightcurves(self, pdc=True, save=False, pout=os.getcwd(), **kwargs):
         """Collect TESS light curves for ``self.object_name``.
 
         This method attempts to use ``juliet.utils.get_all_TESS_data`` to
@@ -2684,9 +2684,9 @@ class TESSData(object):
         save : bool, optional
             If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
             to ``pout``. Default ``False``.
-        pout : str or None, optional
+        pout : str, optional
             Output directory used when ``save=True`` (defaults to the
-            current working directory if ``None``).
+            current working directory).
         **kwargs : dict
             Forwarded to ``juliet.utils.get_all_TESS_data``.
 
@@ -2709,7 +2709,7 @@ class TESSData(object):
                 fname.close()
         return self.tim_lc, self.fl_lc, self.fle_lc, self.out_dict_lc
 
-    def get_tpfs(self, pout=None, load=False, save=False, savefits=False):
+    def get_tpfs(self, pout=os.getcwd(), load=False, save=False, savefits=False):
         """Download or load TESS Target Pixel Files (TPFs) for the target.
 
         If ``load`` is False the method queries MAST for TESS time-series
@@ -2722,9 +2722,9 @@ class TESSData(object):
 
         Parameters
         ----------
-        pout : str or None
-            Output directory used when ``save=True``. If ``None`` the
-            current working directory is used.
+        pout : str, optional
+            Output directory used when ``save=True``. Default is the
+            current working directory.
         load : bool, optional
             If True, attempt to load previously saved TPF pickles instead
             of querying/downloading from MAST. (Loading logic is not
@@ -2822,9 +2822,6 @@ class TESSData(object):
                     data_sector['QUALITY'] = dta['QUALITY'][idx]
                     data_sector['BADPIX'] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
 
-                    if pout is None:
-                        pout = os.getcwd()
-
                     ## And saving them
                     pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_' + sec_tess + '.pkl','wb') )
             
@@ -2862,7 +2859,7 @@ class KeplerData(object):
     def __init__(self, object_name):
         self.object_name = object_name
     
-    def get_lightcurves(self, pdc=True, long_cadence=True, verbose=True, save=False, pout=None):
+    def get_lightcurves(self, pdc=True, long_cadence=True, verbose=True, save=False, pout=os.getcwd()):
         """
         Collect Kepler/K2 light curves for ``self.object_name``.
 
@@ -2881,9 +2878,9 @@ class KeplerData(object):
         save : bool, optional
             If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
             to ``pout``. Default ``False``.
-        pout : str or None, optional
+        pout : str, optional
             Output directory used when ``save=True`` (defaults to the
-            current working directory if ``None``).
+            current working directory).
         """
         if ('K2' in self.object_name) and (not long_cadence):
             raise Exception('No Short Cadence data available for K2 objects.')
@@ -2992,7 +2989,7 @@ class KeplerData(object):
 
         return self.tim_lc, self.fl_lc, self.fle_lc
     
-    def get_tpfs(self, long_cadence=True, load=False, verbose=True, save=False, pout=None, savefits=False):
+    def get_tpfs(self, long_cadence=True, load=False, verbose=True, save=False, pout=os.getcwd(), savefits=False):
         """
         Collect Kepler/K2 target pixel files for ``self.object_name``.
 
@@ -3010,9 +3007,9 @@ class KeplerData(object):
         save : bool, optional
             If True the method will write ASCII files named ``LC_<object>_<inst>.dat``
             to ``pout``. Default ``False``.
-        pout : str or None, optional
+        pout : str, optional
             Output directory used when ``save=True`` (defaults to the
-            current working directory if ``None``).
+            current working directory).
         """
         if not load:
             if ('K2' in self.object_name) and (not long_cadence):
@@ -3109,9 +3106,6 @@ class KeplerData(object):
                         data_sector['FLUX'], data_sector['FLUX_ERR'] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
                         data_sector['QUALITY'] = dta['QUALITY'][idx]
                         data_sector['BADPIX'] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
-
-                        if pout is None:
-                            pout = os.getcwd()
 
                         ## And saving them
                         pickle.dump( data_sector, open(pout + '/TPF_' + self.object_name + '_Kep' + sector + '.pkl','wb') )
