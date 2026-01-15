@@ -22,40 +22,128 @@ try:
 except:
     print('Warning: photutils is not installed! Will not be able to use photutils based photometry.')
 
+try:
+    from dace_query.cheops import Cheops
+except:
+    print('It looks like DACE API is not installed! Will not be able to download CHEOPS data products.')
+
 
 class CHEOPSData(object):
     """
-    To manipulate CHEOPS data, from simple reading to extraction.
+    Manipulate CHEOPS time-series data from simple reading to extraction.
+
+    This class provides tools to read, process, and extract photometry from
+    CHEOPS (CHaracterising ExOPlanet Satellite) observations. It supports
+    reading ``PIPE``-produced light curves, downloading data reduction pipeline
+    (DRP) products, handling sub-array data, and performing aperture photometry
+    on subarrays.
+
+    Parameters
+    ----------
+    object_name : str, optional
+        Name or identifier of the target object. Used for querying the CHEOPS
+        database when downloading data products. Default is ``None``.
+    pipe_filename : str, optional
+        Path to a pipeline-produced FITS file for reading with :meth:`pipe_data`.
+        Default is ``None``.
+
+    Attributes
+    ----------
+    pipe_fname : str or None
+        Stored pipeline FITS filename.
+    object_name : str or None
+        Stored target object name.
+    drp_data : dict
+        Dictionary containing DRP light curve data populated by
+        :meth:`get_drp_lightcurves` with keys for each instrument
+        (e.g., 'TG000001'), each containing 'TIME', 'FLUX', 'FLUX_ERR',
+        'ROLL', 'BG', 'CONTAM', 'SMEAR', 'XC', 'YC'.
+    time_sub, flux_sub, flux_err_sub, badpix_sub : dict
+        Dictionaries containing sub-array data populated by
+        :meth:`get_subarrays`.
+    subarray_data : dict, optional
+        Dictionary that may be populated with processed subarray data.
+
+    Examples
+    --------
+    Reading ``PIPE`` data:
+
+    >>> cheops = CHEOPSData(pipe_filename='path/to/file.fits')
+    >>> data = cheops.pipe_data(bgmin=300)
+
+    Downloading DRP light curves:
+
+    >>> cheops = CHEOPSData(object_name='WASP-189b')
+    >>> drp_data = cheops.get_drp_lightcurves(pout='/path/to/output')
+
+    Notes
+    -----
+    Requires the ``dace_query`` library to download CHEOPS data products from
+    the DACE (Data and Analysis Center for Exoplanets) database.
     """
-    def __init__(self, filename):
-        self.fname = filename
+    def __init__(self, object_name=None, pipe_filename=None):
+        self.pipe_fname = pipe_filename
+        self.object_name = object_name
     
     def pipe_data(self, bgmin=300, not_flg_arr=None):
-        """
-        Function to read PIPE data for CHEOPS
+        """Extract and process light curve data from a ``PIPE`` FITS file.
 
-        This function will read PIPE data with removing flagged data, hihgh background data etc.
-        
-        Parameters:
-        -----------
-        f1 : str
-            Name (along with location) of the fits file
-        bgmin : int, float
-            Threshold for background; all points with higher backgrounds
-            will be discarded.
-            Default is 300 e-/pix
-        not_flg_arr : ndarray
-            Array containing the other non-zero flags to include while assembling the data.
-            Default is None.
-        
-        Returns:
-        --------
+        This method reads a CHEOPS pipeline-produced FITS file (typically
+        from ``self.pipe_fname``) and extracts time series photometry along
+        with auxiliary data such as centroids, background, and temperature.
+        Data points are filtered by quality flags and background levels.
+
+        The flux is normalized by its median value.
+
+        Parameters
+        ----------
+        bgmin : float, optional
+            Minimum background level threshold in counts. Data points with
+            background below this value are excluded. Default is ``300``.
+        not_flg_arr : array_like of int, optional
+            Array of FLAG values to *include* in the output (i.e., non-zero
+            flags are normally rejected, but values in this array are kept).
+            If ``None``, only FLAG==0 data are retained. Default is ``None``.
+
+        Returns
+        -------
         data : dict
-            Dictionary containing BJD time, normalized flux with
-            errors on it, roll angle, xc, yc, BG, thermFront2 and
-            principal components of PSF fitting (U0 to Un)
+            Dictionary containing extracted and processed data with keys:
+
+            - 'TIME' : ndarray
+                Barycentric Julian Date time stamps.
+            - 'FLUX' : ndarray
+                Normalized flux (normalized by median).
+            - 'FLUX_ERR' : ndarray
+                Flux uncertainties (normalized by median).
+            - 'ROLL' : ndarray
+                Roll angle in degrees.
+            - 'XC', 'YC' : ndarray
+                Centroid positions in pixels.
+            - 'BG' : ndarray
+                Background level in counts.
+            - 'TF2' : ndarray
+                thermFront2 temperature in Kelvin.
+            - 'U1' ... 'U16' : ndarray, optional
+                Principal components from PCA.
+
+        Notes
+        -----
+        Quality flags (FLAG column):
+        - 0 : Good data
+        - >0 : Data with issues (normally rejected)
+
+        The method performs two masking steps:
+        1. Removes flagged data and optionally includes specified flags
+        2. Removes high-background points (BG < bgmin)
+
+        Examples
+        --------
+        >>> cheops = CHEOPSData(pipe_filename='file.fits')
+        >>> data = cheops.pipe_data(bgmin=300)
+        >>> print(data['TIME'], data['FLUX'])
         """
-        hdul = fits.open(self.fname)
+        hdul = fits.open(self.pipe_fname)
         tab = Table.read(hdul[1])
         # Masking datasets
         flg = np.asarray(tab['FLAG'])                 # Flagged data
@@ -92,6 +180,310 @@ class CHEOPSData(object):
         for i in range(len(Us_n)):
             data[Us_n[i]] = Us1[i]
         return data
+    
+    def get_drp_lightcurves(self, pout=os.getcwd(), load=False, save=False, aperture='default', visit_nos=None, filekey=None, bkg_clip=20):
+        """Download or load Data Reduction Pipeline light curves from CHEOPS.
+
+        This method queries the CHEOPS DACE database for light curve products
+        (DRP level) for the target specified in ``self.object_name``. It can
+        download a specific visit (by ``visit_nos`` or ``filekey``) or all
+        available visits. Downloaded data are filtered to remove flagged points,
+        high-background measurements, and cosmic rays (via EVENT/STATUS flags).
+
+        Flux is normalized by its median value per instrument.
+
+        Parameters
+        ----------
+        pout : str, optional
+            Output directory for downloaded/saved products. Created if it does
+            not exist. Default is the current working directory.
+        load : bool, optional
+            If ``True``, skip downloading and instead load pre-downloaded files
+            from ``pout``. Useful for re-reading data. Default is ``False``.
+        save : bool, optional
+            If ``True``, retain downloaded FITS files in ``pout`` after
+            extraction. If ``False`` (default), files are deleted after reading.
+        aperture : str, optional
+            Aperture type to download ('default', 'optimal', 'rsup', and 'rinf).
+            Default is ``'default'``.
+        visit_nos : int or None, optional
+            Specific visit number to download (e.g., 701, 101, etc.). If provided,
+            only that visit's data are retrieved. Overridden by ``filekey``.
+            Default is ``None``.
+        filekey : str or None, optional
+            Specific file key (e.g., 'CH_PR100009_TG000001_...') for precise
+            product selection. Takes precedence over ``visit_nos``.
+            Default is ``None``.
+        bkg_clip : float, optional
+            Sigma threshold for background clipping. Points with background
+            above ``median(BG) + bkg_clip * MAD(BG)`` are removed.
+            Default is ``20``.
+
+        Returns
+        -------
+        drp_data : dict
+            Nested dictionary with structure::
+
+                {instrument_name: {
+                    'TIME': ndarray,
+                    'FLUX': ndarray,
+                    'FLUX_ERR': ndarray,
+                    'ROLL': ndarray,
+                    'BG': ndarray,
+                    'CONTAM': ndarray,  # Contamination from nearby sources
+                    'SMEAR': ndarray,   # Smearing correction
+                    'XC', 'YC': ndarray # Centroids
+                }}
+
+            Also stored in ``self.drp_data``.
+
+        Notes
+        -----
+        Data filtering steps:
+        1. Remove non-finite flux values
+        2. Remove points with EVENT != 0 or STATUS != 0
+        3. Remove high-background points (sigma clipping)
+
+        The method creates a tar archive internally when downloading
+        multiple files, which is extracted to ``pout`` then deleted.
+
+        Examples
+        --------
+        Download all DRP light curves for a target:
+
+        >>> cheops = CHEOPSData(object_name='WASP-189b')
+        >>> drp_data = cheops.get_drp_lightcurves(pout='./cheops_data')
+
+        Download a specific visit:
+
+        >>> drp_data = cheops.get_drp_lightcurves(visit_nos=1, pout='./data')
+
+        Load previously downloaded data:
+
+        >>> drp_data = cheops.get_drp_lightcurves(load=True, pout='./data')
+        """
+        # When either filekey or visit_nos is provided, we can pin-point one particular visit
+        # In that case, we can download particular light curve for particular visit
+        # Otherwise, we will download DEFAULT aperture light curves for all visits
+
+        # If pout doesn't exist then make one
+        if not Path( pout ).exists():
+            os.mkdir( pout )
+
+        # Querying the CHEOPS database
+        if ( filekey == None ) and ( visit_nos != None ):
+            ## If file-key is not provided, but visit number is provided, we can find filekey from that
+            values = Cheops.browse_products(filters={'target_name':{'equal': [self.object_name]}}, file_type='lightcurves')
+            
+            for i in range( len( values['file'] ) ):
+                visit = 'TG' + f"{int(visit_nos):06}"
+                if values['file'][i].split('_')[1] == visit:
+                    filekey = 'CH_' + values['file'][i].split('/')[1]
+
+        if ( filekey == None ) and ( visit_nos == None ):
+            filters = { 'target_name': { 'equal' : [self.object_name] } }
+        else:
+            filters = { 'target_name': { 'equal' : [self.object_name] },\
+                        'file_key': { 'equal' : [filekey] } }
+            
+        files = Cheops.browse_products(filters=filters, file_type='lightcurves', aperture=aperture)
+        file_list = files['file']
+
+        if not load:
+            Cheops.download(filters=filters, file_type='lightcurves', aperture=aperture, output_directory=pout)
+
+            if len(file_list) != 1:
+                os.system('tar -xzvf ' + pout + '/cheops_download.tar.gz -C ' + pout)
+
+        self.drp_data = {}
+        for ins in range(len(file_list)):
+            ## Finding the instrument
+            instrument = file_list[ins].split('/')[1].split('_')[1]
+            self.drp_data[instrument] = {}
+
+            ## Now loading the data
+            if ( len(file_list) == 1 ) or load:
+                hdul = fits.open( pout + '/' + file_list[ins].split('/')[-1] )
+            else:
+                hdul = fits.open( pout + '/' + '/'.join(file_list[ins].split('/')[1:]) )
+            
+            table = Table.read( hdul[1] )
+
+            ## Masking non-finite data points
+            mask = np.isfinite( table['FLUX'] )
+
+            times, flux, flux_err = table['BJD_TIME'][mask], table['FLUX'][mask], table['FLUXERR'][mask]
+            roll, bkg, contamination = table['ROLL_ANGLE'][mask], table['BACKGROUND'][mask], table['CONTA_LC'][mask]
+            smear, cenx, ceny = table['SMEARING_LC'][mask], table['CENTROID_X'][mask], table['CENTROID_Y'][mask]
+            event, status = table['EVENT'][mask], table['STATUS'][mask]
+
+            ## Removing data points with EVENTS and STATUS
+            msk3 = np.ones( len(times), dtype=bool )
+            msk3[ event != 0. ] = False
+            msk3[ status != 0. ] = False
+
+            times, flux, flux_err = times[msk3], flux[msk3], flux_err[msk3]
+            roll, bkg, contamination = roll[msk3], bkg[msk3], contamination[msk3]
+            smear, cenx, ceny = smear[msk3], cenx[msk3], ceny[msk3]
+
+            ## Removing high background points
+            msk_bkg = np.ones( len(times), dtype=bool )
+            msk_bkg[ bkg > ( np.nanmedian(bkg) + ( bkg_clip * mad_std(bkg) ) ) ] = False
+
+            times, flux, flux_err = times[msk_bkg], flux[msk_bkg], flux_err[msk_bkg]
+            roll, bkg, contamination = roll[msk_bkg], bkg[msk_bkg], contamination[msk_bkg]
+            smear, cenx, ceny = smear[msk_bkg], cenx[msk_bkg], ceny[msk_bkg]
+
+            # Saving the data in a dictionary
+            self.drp_data[instrument]['TIME'], self.drp_data[instrument]['FLUX'], self.drp_data[instrument]['FLUX_ERR'] = times, flux / np.nanmedian(flux), flux_err / np.nanmedian(flux)
+            self.drp_data[instrument]['ROLL'], self.drp_data[instrument]['BG'], self.drp_data[instrument]['CONTAM'] = roll, bkg, contamination
+            self.drp_data[instrument]['SMEAR'], self.drp_data[instrument]['XC'], self.drp_data[instrument]['YC'] = smear, cenx, ceny
+
+            if ( not save ) and ( not load ):
+                if len(file_list) == 1:
+                    os.system('rm -rf ' + pout + '/' + file_list[ins].split('/')[-1])
+                else:
+                    os.system('rm -rf ' + pout + '/' + file_list[0].split('/')[1])
+            
+            if save:
+                if len(file_list) != 1:
+                    os.system('mv ' + pout + '/' + '/'.join(file_list[ins].split('/')[1:]) + ' ' + pout)
+                    os.system('rm -rf ' + pout + '/' + file_list[ins].split('/')[1] )
+        
+        if not save:
+            os.system('rm -rf ' + pout + '/cheops_download.tar.gz')
+
+        return self.drp_data
+    
+    def get_subarrays(self, pout=os.getcwd(), download_all=False, load=False, visit_nos=None, filekey=None):
+        """Download or load CHEOPS sub-array image time-series data.
+
+        This method queries and downloads sub-array FITS files from CHEOPS
+        data products, which contain the flux measurements as 2D image cubes
+        for each frame in the time series. These are useful for custom
+        photometry and pixel-level analysis.
+
+        Sub-array data are stored in ``self.time_sub``, ``self.flux_sub``,
+        ``self.flux_err_sub``, and ``self.badpix_sub``.
+
+        Parameters
+        ----------
+        pout : str, optional
+            Output directory for downloaded/saved products. Created if needed.
+            Default is the current working directory.
+        download_all : bool, optional
+            If ``True``, download all available file types (not just
+            sub-arrays). If ``False``, filter for sub-array products only.
+            Default is ``False``.
+        load : bool, optional
+            If ``True``, skip downloading and load pre-downloaded files from
+            ``pout``. Default is ``False``.
+        visit_nos : int or None, optional
+            Specific visit number to download. If provided with ``filekey=None``,
+            only that visit's sub-arrays are retrieved. Default is ``None``.
+        filekey : str or None, optional
+            Specific file key for precise product selection. Takes precedence
+            over ``visit_nos``. Default is ``None``.
+
+        Returns
+        -------
+        None
+            Results are stored in instance dictionaries:
+
+            - ``self.time_sub[instrument]`` : ndarray
+                Time stamps (shape: N_frames).
+            - ``self.flux_sub[instrument]`` : ndarray
+                Flux images (shape: N_frames, Ny, Nx).
+            - ``self.flux_err_sub[instrument]`` : ndarray
+                Flux error (shape: N_frames, Ny, Nx)
+            - ``self.badpix_sub[instrument]`` : ndarray
+                Bad-pixel mask (shape: Ny, Nx) where 1 = good, 0 = bad.
+
+        Notes
+        -----
+        The method attempts to load a bad-pixel map from the CHEOPS data
+        products. If not found, a default all-good mask is created.
+
+        Sub-array file names are identified by the key 'COR_SubArray'
+        in the filename.
+
+        Examples
+        --------
+        Download all sub-arrays for a target:
+
+        >>> cheops = CHEOPSData(object_name='WASP-189b')
+        >>> cheops.get_subarrays(pout='./cheops_data')
+
+        Load previously downloaded sub-array data:
+
+        >>> cheops.get_subarrays(load=True, pout='./data')
+        """
+        filetype = 'all' if download_all else 'sub'
+        
+        # If pout doesn't exist then make one
+        if not Path( pout ).exists():
+            os.mkdir( pout )
+
+        # Querying the CHEOPS database
+        if ( filekey == None ) and ( visit_nos != None ):
+            ## If file-key is not provided, but visit number is provided, we can find filekey from that
+            values = Cheops.browse_products(filters={'target_name':{'equal': [self.object_name]}}, file_type=filetype)
+            
+            for i in range( len( values['file'] ) ):
+                visit = 'TG' + f"{int(visit_nos):06}"
+                if values['file'][i].split('_')[1] == visit:
+                    filekey = 'CH_' + values['file'][i].split('/')[1]
+
+        if ( filekey == None ) and ( visit_nos == None ):
+            filters = { 'target_name': { 'equal' : [self.object_name] } }
+        else:
+            filters = { 'target_name': { 'equal' : [self.object_name] },\
+                        'file_key': { 'equal' : [filekey] } }
+            
+        files = Cheops.browse_products(filters=filters, file_type=filetype)
+        file_list = []
+        for i in range(len(files['file'])):
+            keywd = 'COR_SubArray'
+            if '_'.join(files['file'][i].split('_')[-3:-1]) == keywd:
+                file_list.append( files['file'][i] )
+
+        if not load:
+            Cheops.download(filters=filters, file_type=filetype, output_directory=pout)
+            os.system('tar -xzvf ' + pout + '/cheops_download.tar.gz -C ' + pout)
+
+        self.time_sub, self.flux_sub, self.flux_err_sub, self.badpix_sub = {}, {}, {}, {}
+
+        for ins in range(len(file_list)):
+            ## Finding the instrument
+            instrument = file_list[ins].split('/')[1].split('_')[1]
+
+            hdul = fits.open( pout + '/' + '/'.join(file_list[ins].split('/')[1:]) )
+            table = Table.read( hdul[2] )
+            
+            # Reading the flux
+            self.time_sub[instrument] = np.asarray( table['BJD_TIME'] )
+            self.flux_sub[instrument] = hdul[1].data
+            self.flux_err_sub[instrument] = np.sqrt( hdul[1].data + table['RON'][:,None,None]**2 )
+
+            try:
+                ## If we have bad-pixel file, we can use it for bad-pixel map
+                hdul_badpix = fits.open( pout + '/' + file_list[ins].split('/')[1] + '/' + '_'.join(file_list[ins].split('/')[2].split('_')[0:4]) + '_PIP_COR_PixelFlagMapSubArray_V0300.fits')
+
+                badpix = np.ones(hdul_badpix[1].data.shape)
+                badpix[hdul_badpix[1].data != 0.] = 0.
+            except:
+                ## Except, just assume that everything is good
+                badpix = np.ones( hdul[1].data.shape )
+
+            self.badpix_sub[instrument] = badpix
+     
+
+    def ApPhoto(self, visit_nos, aprad=None, sky_rad1=None, sky_rad2=None, brightpix=False, nos_brightest=12, nos_faintest=None, minmax=None):
+        instrument = 'TG' + f"{int(visit_nos):06}"
+        return ApPhoto(times=self.time_sub[instrument], frames=self.flux_sub[instrument], errors=self.flux_err_sub[instrument], badpix=self.badpix_sub[instrument],\
+                       aprad=aprad, sky_rad1=sky_rad1, sky_rad2=sky_rad2, brightpix=brightpix, nos_brightest=nos_brightest, nos_faintest=nos_faintest, minmax=minmax)
+
+
     
 class julietPlots(object):
     """Plotting helper for results produced by a `juliet` analysis.
