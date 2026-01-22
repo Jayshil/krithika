@@ -469,8 +469,14 @@ class CHEOPSData(object):
                 ## If we have bad-pixel file, we can use it for bad-pixel map
                 hdul_badpix = fits.open( pout + '/' + file_list[ins].split('/')[1] + '/' + '_'.join(file_list[ins].split('/')[2].split('_')[0:4]) + '_PIP_COR_PixelFlagMapSubArray_V0300.fits')
 
-                badpix = np.ones(hdul_badpix[1].data.shape)
-                badpix[hdul_badpix[1].data != 0.] = 0.
+                ## 2D badpixel map
+                badpix2d = np.ones(hdul_badpix[1].data.shape)
+                badpix2d[hdul_badpix[1].data != 0.] = 0.
+
+                ## 3D badpixel map
+                badpix = np.ones( hdul[1].data.shape )
+                badpix = badpix * badpix2d[None, :, :]
+
             except:
                 ## Except, just assume that everything is good
                 badpix = np.ones( hdul[1].data.shape )
@@ -742,8 +748,11 @@ class julietPlots(object):
             #  detrend the data
             # -----------------------------------------
             # GP model
-            if instruments[i] in self.dataset.GP_lc_arguments.keys():
-                gp_model = self.all_mods_ins[instruments[i]]['GP']
+            if self.dataset.GP_lc_arguments != None:
+                if instruments[i] in self.dataset.GP_lc_arguments.keys():
+                    gp_model = self.all_mods_ins[instruments[i]]['GP']
+                else:
+                    gp_model = 0.
             else:
                 gp_model = 0.
 
@@ -838,19 +847,22 @@ class julietPlots(object):
                 ### (we have to remember that everything is sorted according to GP regressors)
                 ### (while dummy time is sorted according to times)
                 ### (we will perform interpolation to arrays sorted according to time)
-                if instruments[ins] in self.dataset.GP_lc_arguments.keys():
-                    #! Try/except because it is possible that not all instruments have GP model
-                    try:
-                        inter_gp = interp1d(x=self.dataset.times_lc[instruments[ins]][self.idx_time_sort[instruments[ins]]],\
-                                            y=self.dataset.GP_lc_arguments[instruments[ins]][:,0][self.idx_time_sort[instruments[ins]]],\
-                                            kind='cubic')
-                        gp_reg_highres = inter_gp(x=dummy_time_highres)
+                if self.dataset.GP_lc_arguments != None:
+                    if instruments[ins] in self.dataset.GP_lc_arguments.keys():
+                        #! Try/except because it is possible that not all instruments have GP model
+                        try:
+                            inter_gp = interp1d(x=self.dataset.times_lc[instruments[ins]][self.idx_time_sort[instruments[ins]]],\
+                                                y=self.dataset.GP_lc_arguments[instruments[ins]][:,0][self.idx_time_sort[instruments[ins]]],\
+                                                kind='cubic')
+                            gp_reg_highres = inter_gp(x=dummy_time_highres)
 
-                        #### Now, we can sort time, phase, gp regressors according to GP regressors
-                        idx_gp = np.argsort( gp_reg_highres )
-                        dummy_time_highres, dummy_phs_highres = dummy_time_highres[idx_gp], dummy_phs_highres[idx_gp]
-                        gp_reg_highres = gp_reg_highres[idx_gp]
-                    except:
+                            #### Now, we can sort time, phase, gp regressors according to GP regressors
+                            idx_gp = np.argsort( gp_reg_highres )
+                            dummy_time_highres, dummy_phs_highres = dummy_time_highres[idx_gp], dummy_phs_highres[idx_gp]
+                            gp_reg_highres = gp_reg_highres[idx_gp]
+                        except:
+                            gp_reg_highres = None
+                    else:
                         gp_reg_highres = None
                 else:
                     gp_reg_highres = None
