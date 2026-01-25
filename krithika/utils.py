@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider, CheckButtons
+from matplotlib.colors import Normalize, LogNorm
 from astropy.stats import mad_std
 from astropy.timeseries import LombScargle
 import astropy.constants as con
@@ -536,3 +538,186 @@ def generate_times_with_gaps(times, efficiency):
     tim, roll = tim[idx_timsort], roll[idx_timsort]
 
     return tim, roll
+
+
+def plot_nd_data(data, cmap="magma"):
+    """
+    Visually polished interactive viewer for 2D / 3D / 4D data.
+    """
+
+    # ----------------------------
+    # Global style tweaks
+    # ----------------------------
+    plt.rcParams.update({
+        "figure.facecolor": "0.97",
+        "axes.facecolor": "1.0",
+        "axes.edgecolor": "0.3",
+        "axes.labelcolor": "0.2",
+        "xtick.color": "0.3",
+        "ytick.color": "0.3",
+        "font.size": 11,
+        "axes.titleweight": "semibold",
+    })
+
+    data = np.asarray(data)
+    ndim = data.ndim
+    if ndim not in (2, 3, 4):
+        raise ValueError("Data must be 2D, 3D, or 4D")
+
+    i_image = 0
+    i_group = 0
+    use_log = False
+
+    def get_image():
+        if ndim == 2:
+            return data
+        elif ndim == 3:
+            return data[i_image]
+        else:
+            return data[i_image, i_group]
+
+    img0 = get_image()
+
+    finite = np.isfinite(data)
+    data_min = np.nanmin(data[finite])
+    data_max = np.nanmax(data[finite])
+
+    vmin0 = max(data_min, 1e-10) if data_min <= 0 else data_min
+    vmax0 = data_max
+
+    # ----------------------------
+    # Figure layout
+    # ----------------------------
+    fig = plt.figure(figsize=(8.5, 6.5))
+    gs = fig.add_gridspec(
+        nrows=6, ncols=6,
+        height_ratios=[1, 1, 1, 0.25, 0.25, 0.25],
+        hspace=0.35, wspace=0.4
+    )
+
+    ax_img = fig.add_subplot(gs[:3, :5])
+    ax_ctrl = fig.add_subplot(gs[:3, 5])
+    ax_ctrl.axis("off")
+
+    # ----------------------------
+    # Image + colorbar
+    # ----------------------------
+    norm = Normalize(vmin=vmin0, vmax=vmax0)
+    im = ax_img.imshow(img0, cmap=cmap, norm=norm, origin="lower")
+    ax_img.set_title("Interactive ND Data Viewer")
+    ax_img.set_xticks([])
+    ax_img.set_yticks([])
+
+    cbar = fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.03)
+    cbar.ax.tick_params(labelsize=9)
+
+    # ----------------------------
+    # Sliders
+    # ----------------------------
+    ax_vmin = fig.add_subplot(gs[3, :5])
+    ax_vmax = fig.add_subplot(gs[4, :5])
+
+    s_vmin = Slider(
+        ax_vmin, "vmin",
+        data_min, data_max,
+        valinit=vmin0,
+        color="0.3",
+        handle_style=dict(facecolor="0.2")
+    )
+
+    s_vmax = Slider(
+        ax_vmax, "vmax",
+        data_min, data_max,
+        valinit=vmax0,
+        color="0.3",
+        handle_style=dict(facecolor="0.2")
+    )
+
+    sliders = []
+
+    if ndim >= 3:
+        ax_img_idx = fig.add_subplot(gs[5, :5])
+        s_img = Slider(
+            ax_img_idx, "Image index",
+            0, data.shape[0] - 1,
+            valinit=0,
+            valstep=1,
+            color="0.5"
+        )
+        sliders.append(s_img)
+
+    if ndim == 4:
+        ax_grp_idx = fig.add_subplot(gs[5, 5:])
+        s_grp = Slider(
+            ax_grp_idx, "Group",
+            0, data.shape[1] - 1,
+            valinit=0,
+            valstep=1,
+            color="0.5"
+        )
+        sliders.append(s_grp)
+
+    # ----------------------------
+    # Log-scale checkbox
+    # ----------------------------
+    ax_check = fig.add_axes([0.78, 0.55, 0.15, 0.1])
+    check = CheckButtons(ax_check, ["Log scale"], [False])
+
+    patches = getattr(check, "rectangles", check.ax.patches)
+    for patch in patches:
+        patch.set_edgecolor("0.4")
+        patch.set_facecolor("0.95")
+    
+    
+    for label in check.labels:
+        label.set_color("0.2")
+
+    # ----------------------------
+    # Update logic
+    # ----------------------------
+    def update(val=None):
+        nonlocal i_image, i_group
+
+        if ndim >= 3:
+            i_image = int(s_img.val)
+        if ndim == 4:
+            i_group = int(s_grp.val)
+
+        img = get_image()
+
+        vmin = s_vmin.val
+        vmax = s_vmax.val
+        if vmin >= vmax:
+            return
+
+        if use_log:
+            pos = img[img > 0]
+            if pos.size == 0:
+                return
+            vmin_eff = max(vmin, np.nanmin(pos))
+            norm = LogNorm(vmin=vmin_eff, vmax=vmax)
+        else:
+            norm = Normalize(vmin=vmin, vmax=vmax)
+
+        im.set_data(img)
+        im.set_norm(norm)
+        cbar.update_normal(im)
+
+        fig.canvas.draw_idle()
+
+    def toggle_log(label):
+        nonlocal use_log
+        use_log = not use_log
+        update()
+
+    # ----------------------------
+    # Connect widgets
+    # ----------------------------
+    s_vmin.on_changed(update)
+    s_vmax.on_changed(update)
+    for s in sliders:
+        s.on_changed(update)
+
+    check.on_clicked(toggle_log)
+
+    plt.show()
