@@ -560,6 +560,8 @@ class NDImageViewer:
         self.cuts = []
         self.active_cut = None
         self.drag_mode = None
+        self.dragged_cut = None
+        self.dragged_endpoint = None
         self.color_cycle = itertools.cycle(
             ["cyan", "orange", "lime", "magenta", "red", "yellow"]
         )
@@ -629,49 +631,65 @@ class NDImageViewer:
 
         # ---- Bottom-right profiles ----
         self.ax_prof = self.fig.add_axes([0.55, 0.15, 0.40, 0.30])
-        self.ax_prof.set_title("Cut profiles")
         self.ax_prof.set_xlabel("Pixel index")
         self.ax_prof.set_ylabel("Value", labelpad=10)
 
     def _setup_controls(self):
         px, pw = 0.55, 0.38
         y = 0.90
-        dy = 0.06
+        dy = 0.055
 
         def label(text, ypos):
             self.fig.text(px, ypos, text, weight="semibold", color="#444")
 
         label("Scaling", y)
-
         y -= dy
+
+        # vmin slider
         self.fig.text(px, y + 0.02, "vmin", fontsize=9)
-        self.ax_vmin = self.fig.add_axes([px + 0.06, y, pw - 0.15, 0.02])
+        self.ax_vmin = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.18, 0.02])
         self.s_vmin = Slider(self.ax_vmin, "", self.data_min, self.data_max, valinit=self.vmin)
-
         y -= dy
+
+        # vmax slider
         self.fig.text(px, y + 0.02, "vmax", fontsize=9)
-        self.ax_vmax = self.fig.add_axes([px + 0.06, y, pw - 0.15, 0.02])
+        self.ax_vmax = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.18, 0.02])
         self.s_vmax = Slider(self.ax_vmax, "", self.data_min, self.data_max, valinit=self.vmax)
 
-        y -= dy * 1.1
-        self.ax_scale = self.fig.add_axes([px, y, 0.18, 0.08])
-        self.scale_radio = RadioButtons(self.ax_scale, ["Linear", "Log"])
+        y -= dy * 0.7
+        label("Scale mode", y)
+        y -= dy * 1.2
+
+        # Scale selector (2 columns: Linear/Log and Asinh/Zscale)
+        self.ax_scale = self.fig.add_axes([px, y, 0.38, 0.06])
+        self.scale_radio = RadioButtons(
+            self.ax_scale,
+            ["Linear", "Log", "Asinh", "Zscale"],
+            active=0
+        )
+        for txt in self.scale_radio.labels:
+            txt.set_fontsize(9)
+
+        # Arrange into 1 row (4 columns)
+        for i, label_obj in enumerate(self.scale_radio.labels):
+            label_obj.set_position((0.1 + 0.25 * i, 0.5))
+
 
         # ---- Navigation ----
-        y -= dy * 1.2
+        y -= dy * 0.7
         label("Navigation", y)
 
         if self.ndim >= 3:
             y -= dy
             self.fig.text(px, y + 0.02, "Image", fontsize=9)
-            self.ax_img_idx = self.fig.add_axes([px + 0.06, y, pw - 0.15, 0.02])
+            self.ax_img_idx = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.15, 0.02])
             self.s_img = Slider(self.ax_img_idx, "", 0, self.data.shape[0]-1,
                                 valinit=0, valstep=1)
 
         if self.ndim == 4:
             y -= dy
             self.fig.text(px, y + 0.02, "Group", fontsize=9)
-            self.ax_grp = self.fig.add_axes([px + 0.06, y, pw - 0.15, 0.02])
+            self.ax_grp = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.15, 0.02])
             self.s_grp = Slider(self.ax_grp, "", 0, self.data.shape[1]-1,
                                 valinit=0, valstep=1)
 
@@ -679,12 +697,12 @@ class NDImageViewer:
         y -= dy * 1.3
         label("Cuts", y)
 
-        y -= dy
-        self.ax_add_cut = self.fig.add_axes([px, y, 0.12, 0.045])
+        #y -= dy
+        self.ax_add_cut = self.fig.add_axes([px + 0.14, y-0.01, 0.12, 0.045])
         self.btn_add_cut = Button(self.ax_add_cut, "Add cut")
 
-        self.ax_save_cut = self.fig.add_axes([px + 0.14, y, 0.12, 0.045])
-        self.btn_save_cut = Button(self.ax_save_cut, "Save cuts")
+        self.ax_remove_cut = self.fig.add_axes([px + 0.14 + 0.14, y-0.01, 0.12, 0.045])
+        self.btn_remove_cut = Button(self.ax_remove_cut, "Remove cut")
 
     # ----------------------------------------------------
     # Cut management
@@ -697,6 +715,18 @@ class NDImageViewer:
             "color": next(self.color_cycle),
             "visible": True
         }
+
+    def _remove_cut(self):
+        """Remove the selected cut or the last cut if none is selected."""
+        if self.active_cut is not None:
+            # Remove active cut being drawn
+            self.active_cut = None
+        elif self.cuts:
+            # Remove the last cut
+            cut = self.cuts.pop()
+            if cut["line"] is not None:
+                cut["line"].remove()
+            self._update_profiles()
 
     def _finalize_cut(self):
         cut = self.active_cut
@@ -715,7 +745,6 @@ class NDImageViewer:
 
     def _update_profiles(self):
         self.ax_prof.cla()
-        self.ax_prof.set_title("Cut profiles")
         self.ax_prof.set_xlabel("Pixel index")
         self.ax_prof.set_ylabel("Value", labelpad=10)
 
@@ -736,6 +765,36 @@ class NDImageViewer:
         yi = np.clip(np.round(y).astype(int), 0, self.ny - 1)
         return img[yi, xi]
 
+    def _get_distance_to_point(self, p1, p2, threshold=10):
+        """Check if a point is near p1 or p2 within threshold pixels."""
+        dist_p1 = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        dist_p2 = np.sqrt((self.data.shape[-1] - p2[0])**2 + (self.data.shape[-2] - p2[1])**2)
+        
+        if dist_p1 < threshold:
+            return "p1", dist_p1
+        elif dist_p2 < threshold:
+            return "p2", dist_p2
+        return None, None
+
+    def _get_distance_to_line(self, p1, p2, point, threshold=10):
+        """Check if a point is near a line segment within threshold pixels."""
+        x1, y1 = p1
+        x2, y2 = p2
+        x0, y0 = point
+
+        # Distance from point to line segment
+        num = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1)
+        den = np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
+        if den == 0:
+            return np.sqrt((x0 - x1)**2 + (y0 - y1)**2)
+        dist = num / den
+
+        # Check if point projects onto the segment
+        t = ((x0 - x1) * (x2 - x1) + (y0 - y1) * (y2 - y1)) / (den**2)
+        if 0 <= t <= 1 and dist < threshold:
+            return dist
+        return float('inf')
+
     # ----------------------------------------------------
     # Events
     # ----------------------------------------------------
@@ -750,11 +809,12 @@ class NDImageViewer:
 
         self.scale_radio.on_clicked(self._change_scale)
         self.btn_add_cut.on_clicked(lambda _: self._add_cut())
-        self.btn_save_cut.on_clicked(lambda _: self.save_cuts())
+        self.btn_remove_cut.on_clicked(lambda _: self._remove_cut())
 
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_drag)
         self.fig.canvas.mpl_connect("button_release_event", self._on_release)
+        self.fig.canvas.mpl_connect("pick_event", self._on_pick)
 
     def _update_image(self, val=None):
         if self.ndim >= 3:
@@ -766,7 +826,15 @@ class NDImageViewer:
 
         if self.scale_mode == "log":
             pos = img[img > 0]
-            norm = LogNorm(max(self.s_vmin.val, pos.min()), self.s_vmax.val)
+            norm = LogNorm(max(self.s_vmin.val, pos.min() if len(pos) > 0 else 1e-10), self.s_vmax.val)
+        elif self.scale_mode == "asinh":
+            from matplotlib.colors import SymLogNorm
+            norm = SymLogNorm(linthresh=0.03, vmin=self.s_vmin.val, vmax=self.s_vmax.val)
+        elif self.scale_mode == "zscale":
+            # Simple zscale-like normalization: use percentiles
+            vmin_z = np.percentile(img[np.isfinite(img)], 2)
+            vmax_z = np.percentile(img[np.isfinite(img)], 98)
+            norm = Normalize(vmin_z, vmax_z)
         else:
             norm = Normalize(self.s_vmin.val, self.s_vmax.val)
 
@@ -781,37 +849,79 @@ class NDImageViewer:
         self._update_image()
 
     def _on_click(self, event):
-        if event.inaxes != self.ax_img or self.active_cut is None:
+        if event.inaxes != self.ax_img:
             return
-        if self.active_cut["p1"] is None:
-            self.active_cut["p1"] = [event.xdata, event.ydata]
-        else:
-            self.active_cut["p2"] = [event.xdata, event.ydata]
-            self._finalize_cut()
+
+        # If drawing a new cut
+        if self.active_cut is not None:
+            if self.active_cut["p1"] is None:
+                self.active_cut["p1"] = [event.xdata, event.ydata]
+            else:
+                self.active_cut["p2"] = [event.xdata, event.ydata]
+                self._finalize_cut()
+            return
+
+        # Check if clicking near an existing cut endpoint or line
+        point = [event.xdata, event.ydata]
+        for i, cut in enumerate(self.cuts):
+            # Check distance to endpoints
+            endpoint, dist = self._get_distance_to_point(cut["p1"], point, threshold=10)
+            if endpoint is not None:
+                self.dragged_cut = i
+                self.dragged_endpoint = endpoint
+                self.drag_mode = "endpoint"
+                return
+
+            endpoint2, dist2 = self._get_distance_to_point(cut["p2"], point, threshold=10)
+            if endpoint2 is not None:
+                self.dragged_cut = i
+                self.dragged_endpoint = endpoint2
+                self.drag_mode = "endpoint"
+                return
+
+            # Check distance to line
+            line_dist = self._get_distance_to_line(cut["p1"], cut["p2"], point, threshold=10)
+            if line_dist < 10:
+                self.dragged_cut = i
+                self.drag_mode = "line"
+                self.drag_start = point
+                return
 
     def _on_drag(self, event):
-        pass  # kept concise here; dragging logic already demonstrated earlier
+        if event.inaxes != self.ax_img or self.drag_mode is None or self.dragged_cut is None:
+            return
+
+        cut = self.cuts[self.dragged_cut]
+        point = [event.xdata, event.ydata]
+
+        if self.drag_mode == "endpoint":
+            if self.dragged_endpoint == "p1":
+                cut["p1"] = point
+            else:
+                cut["p2"] = point
+            # Update line
+            cut["line"].set_data([cut["p1"][0], cut["p2"][0]], [cut["p1"][1], cut["p2"][1]])
+            self._update_profiles()
+
+        elif self.drag_mode == "line":
+            # Translate both endpoints
+            dx = point[0] - self.drag_start[0]
+            dy = point[1] - self.drag_start[1]
+            cut["p1"] = [cut["p1"][0] + dx, cut["p1"][1] + dy]
+            cut["p2"] = [cut["p2"][0] + dx, cut["p2"][1] + dy]
+            cut["line"].set_data([cut["p1"][0], cut["p2"][0]], [cut["p1"][1], cut["p2"][1]])
+            self.drag_start = point
+            self._update_profiles()
 
     def _on_release(self, event):
         self.drag_mode = None
+        self.dragged_cut = None
+        self.dragged_endpoint = None
 
-    # ----------------------------------------------------
-    # Persistence
-    # ----------------------------------------------------
-    def save_cuts(self, filename="cuts.json"):
-        cuts_out = []
-        for c in self.cuts:
-            cuts_out.append({
-                "p1": c["p1"],
-                "p2": c["p2"],
-                "color": c["color"],
-                "image": self.i_image,
-                "group": self.i_group
-            })
-        Path(filename).write_text(json.dumps(cuts_out, indent=2))
-        print(f"Saved {len(cuts_out)} cuts → {filename}")
+    def _on_pick(self, event):
+        """Handle pick events on cut lines (alternative selection method)."""
+        pass
 
     # ----------------------------------------------------
     def show(self):
         plt.show()
-
