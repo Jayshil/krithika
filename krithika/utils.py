@@ -604,7 +604,7 @@ class NDImageViewer:
             "font.size": 10,
         })
 
-        self.fig = plt.figure(figsize=(12, 7))
+        self.fig = plt.figure(figsize=(12, 6))
 
         # ---- Left square image panel ----
         self.ax_img = self.fig.add_axes([0.05, 0.15, 0.38, 0.75])
@@ -630,13 +630,13 @@ class NDImageViewer:
         self._setup_controls()
 
         # ---- Bottom-right profiles ----
-        self.ax_prof = self.fig.add_axes([0.55, 0.15, 0.40, 0.30])
+        self.ax_prof = self.fig.add_axes([0.55, 0.15, 0.40, 0.35])
         self.ax_prof.set_xlabel("Pixel index")
         self.ax_prof.set_ylabel("Value", labelpad=10)
 
     def _setup_controls(self):
         px, pw = 0.55, 0.38
-        y = 0.90
+        y = 0.85
         dy = 0.055
 
         def label(text, ypos):
@@ -647,21 +647,21 @@ class NDImageViewer:
 
         # vmin slider
         self.fig.text(px, y + 0.02, "vmin", fontsize=9)
-        self.ax_vmin = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.18, 0.02])
+        self.ax_vmin = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.2, 0.02])
         self.s_vmin = Slider(self.ax_vmin, "", self.data_min, self.data_max, valinit=self.vmin)
         y -= dy
 
         # vmax slider
         self.fig.text(px, y + 0.02, "vmax", fontsize=9)
-        self.ax_vmax = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.18, 0.02])
+        self.ax_vmax = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.2, 0.02])
         self.s_vmax = Slider(self.ax_vmax, "", self.data_min, self.data_max, valinit=self.vmax)
 
-        y -= dy * 0.7
-        label("Scale mode", y)
-        y -= dy * 1.2
+        
+        # ------- Scale mode -------
+        self.fig.text(px + 0.32, 0.85, "Scale mode", weight="semibold", color="#444")
 
         # Scale selector (2 columns: Linear/Log and Asinh/Zscale)
-        self.ax_scale = self.fig.add_axes([px, y, 0.38, 0.06])
+        self.ax_scale = self.fig.add_axes([px + 0.32, 0.68, 0.08, 0.15])
         self.scale_radio = RadioButtons(
             self.ax_scale,
             ["Linear", "Log", "Asinh", "Zscale"],
@@ -670,31 +670,36 @@ class NDImageViewer:
         for txt in self.scale_radio.labels:
             txt.set_fontsize(9)
 
-        # Arrange into 1 row (4 columns)
-        for i, label_obj in enumerate(self.scale_radio.labels):
-            label_obj.set_position((0.1 + 0.25 * i, 0.5))
-
 
         # ---- Navigation ----
-        y -= dy * 0.7
-        label("Navigation", y)
+        y -= dy * 0.8
+        if self.ndim >= 3:
+            label("Navigation", y)
 
         if self.ndim >= 3:
             y -= dy
             self.fig.text(px, y + 0.02, "Image", fontsize=9)
-            self.ax_img_idx = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.15, 0.02])
+            self.ax_img_idx = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.2, 0.02])
             self.s_img = Slider(self.ax_img_idx, "", 0, self.data.shape[0]-1,
                                 valinit=0, valstep=1)
 
         if self.ndim == 4:
             y -= dy
             self.fig.text(px, y + 0.02, "Group", fontsize=9)
-            self.ax_grp = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.15, 0.02])
+            self.ax_grp = self.fig.add_axes([px + 0.06, y+0.015, pw - 0.2, 0.02])
             self.s_grp = Slider(self.ax_grp, "", 0, self.data.shape[1]-1,
                                 valinit=0, valstep=1)
 
         # ---- Cuts ----
         y -= dy * 1.3
+
+        if self.ndim == 2:
+            y -= 0.105     
+        if self.ndim == 3:
+            y -= 0.05
+        if self.ndim == 4:
+            y -= -0.005
+
         label("Cuts", y)
 
         #y -= dy
