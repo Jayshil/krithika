@@ -545,7 +545,95 @@ def generate_times_with_gaps(times, efficiency):
 
 
 class NDImageViewer:
+    """Interactive viewer for 2D, 3D, and 4D image data with real-time analysis tools.
+
+    This class provides an interactive matplotlib-based interface for viewing and analyzing
+    multi-dimensional image data. It supports 2D images, 3D image cubes (e.g., time series),
+    and 4D data (e.g., time series of grouped observations). Features include dynamic scaling
+    modes, cut profile extraction, and draggable cut tools for pixel-level analysis.
+
+    Parameters
+    ----------
+    data : array-like
+        Input image data with shape (ny, nx) for 2D, (nt, ny, nx) for 3D, or
+        (nt, ng, ny, nx) for 4D, where nt=time, ng=group, ny/nx=spatial dimensions.
+    cmap : str, optional
+        Matplotlib colormap name for image display. Default is ``'magma'``.
+
+    Attributes
+    ----------
+    data : ndarray
+        The input image data.
+    ndim : int
+        Number of dimensions in the data (2, 3, or 4).
+    i_image : int
+        Current image/frame index for 3D/4D data (default 0).
+    i_group : int
+        Current group index for 4D data (default 0).
+    scale_mode : str
+        Current scaling mode ('linear', 'log', 'asinh', or 'zscale').
+    cuts : list of dict
+        List of extracted cut profiles, each containing 'p1', 'p2', 'line', 'color',
+        and 'visible' keys.
+    active_cut : dict or None
+        Cut currently being drawn (awaiting two clicks).
+    fig : matplotlib.figure.Figure
+        The interactive figure object.
+    ax_img : matplotlib.axes.Axes
+        Main image display axes.
+    ax_prof : matplotlib.axes.Axes
+        Profile plot axes for cut data.
+    im : matplotlib.image.AxesImage
+        The displayed image object.
+    cbar : matplotlib.colorbar.Colorbar
+        Colorbar for the image display.
+
+    Notes
+    -----
+    - Data must be 2D, 3D, or 4D; other dimensions will raise a ValueError.
+    - Finite data values are automatically detected for scaling limits.
+    - The viewer is interactive: sliders update in real-time, and cuts can be drawn
+      and modified by clicking/dragging on the image.
+
+    Examples
+    --------
+    View a 2D image:
+
+    >>> import numpy as np
+    >>> data_2d = np.random.rand(256, 256)
+    >>> viewer = NDImageViewer(data=data_2d)
+    >>> viewer.show()
+
+    View a 3D time series:
+
+    >>> data_3d = np.random.rand(100, 256, 256)  # 100 frames
+    >>> viewer = NDImageViewer(data=data_3d, cmap='viridis')
+    >>> viewer.show()
+
+    View 4D data and extract cuts:
+
+    >>> data_4d = np.random.rand(10, 8, 256, 256)  # 10 times, 8 groups
+    >>> viewer = NDImageViewer(data=data_4d)
+    >>> viewer.show()
+    >>> # Click "Add cut" button, then click two points on the image to define a cut
+    """
+
     def __init__(self, data, cmap="magma"):
+        """Initialize the NDImageViewer.
+
+        Parameters
+        ----------
+        data : array-like
+            Image data (2D, 3D, or 4D).
+        cmap : str, optional
+            Colormap name. Default is ``'magma'``.
+
+        Raises
+        ------
+        ValueError
+            If data is not 2D, 3D, or 4D.
+        """
+
         self.data = np.asarray(data)
         self.cmap = cmap
         self.ndim = self.data.ndim
@@ -574,6 +662,11 @@ class NDImageViewer:
     # Data helpers
     # ----------------------------------------------------
     def _setup_data(self):
+        """Initialize data ranges and extract the first image for display.
+
+        Computes finite value statistics (min/max) and initializes vmin/vmax
+        for scaling. Sets up the first image frame to display.
+        """
         self.img0 = self._get_image()
         self.ny, self.nx = self.img0.shape
 
@@ -585,6 +678,13 @@ class NDImageViewer:
         self.vmax = self.data_max
 
     def _get_image(self):
+        """Retrieve the current 2D image from the data based on current indices.
+
+        Returns
+        -------
+        ndarray
+            2D image array (shape: ny, nx).
+        """
         if self.ndim == 2:
             return self.data
         elif self.ndim == 3:
@@ -596,6 +696,13 @@ class NDImageViewer:
     # Figure & layout
     # ----------------------------------------------------
     def _setup_figure(self):
+        """Create and configure the matplotlib figure and axes layout.
+
+        Sets up three main components:
+        - Left panel: main image display with colorbar
+        - Top-right: interactive controls (sliders, scale selector)
+        - Bottom-right: cut profile plot
+        """
         plt.rcParams.update({
             "figure.facecolor": "#f2f2f2",
             "axes.facecolor": "#ffffff",
@@ -635,6 +742,14 @@ class NDImageViewer:
         self.ax_prof.set_ylabel("Value", labelpad=10)
 
     def _setup_controls(self):
+        """Create and arrange interactive control widgets.
+
+        Widgets include:
+        - vmin/vmax sliders for intensity scaling
+        - Scale mode selector (Linear/Log/Asinh/Zscale)
+        - Image and group sliders (for 3D/4D data)
+        - "Add cut" and "Remove cut" buttons
+        """
         px, pw = 0.55, 0.38
         y = 0.85
         dy = 0.055
@@ -713,6 +828,11 @@ class NDImageViewer:
     # Cut management
     # ----------------------------------------------------
     def _add_cut(self):
+        """Initialize a new cut for the user to draw.
+
+        Sets ``self.active_cut`` to a new dict and assigns a color from the
+        color cycle. The user then clicks twice on the image to define the cut.
+        """
         self.active_cut = {
             "p1": None,
             "p2": None,
@@ -722,7 +842,12 @@ class NDImageViewer:
         }
 
     def _remove_cut(self):
-        """Remove the selected cut or the last cut if none is selected."""
+        """Remove the active cut being drawn or the last finalized cut.
+
+        If a cut is being drawn (``self.active_cut`` is not None), cancel it.
+        Otherwise, pop the last cut from the ``self.cuts`` list and remove
+        its line from the image.
+        """
         if self.active_cut is not None:
             # Remove active cut being drawn
             self.active_cut = None
@@ -734,6 +859,12 @@ class NDImageViewer:
             self._update_profiles()
 
     def _finalize_cut(self):
+        """Finalize a cut after two points have been clicked.
+
+        Creates a Line2D artist on the image and appends the cut to
+        ``self.cuts``. Resets ``self.active_cut`` to None and updates
+        the profile plot.
+        """
         cut = self.active_cut
         line = Line2D(
             [cut["p1"][0], cut["p2"][0]],
@@ -749,6 +880,11 @@ class NDImageViewer:
         self._update_profiles()
 
     def _update_profiles(self):
+        """Recompute and redraw cut profiles in the profile axes.
+
+        Clears the profile plot and redraws profiles for all visible cuts
+        by sampling intensity along each cut line.
+        """
         self.ax_prof.cla()
         self.ax_prof.set_xlabel("Pixel index")
         self.ax_prof.set_ylabel("Value", labelpad=10)
@@ -764,6 +900,27 @@ class NDImageViewer:
         self.fig.canvas.draw_idle()
 
     def _sample_cut(self, img, p1, p2, npts=300):
+        """Sample pixel values along a line segment.
+
+        Linearly interpolates between two points and samples the image
+        at interpolated coordinates.
+
+        Parameters
+        ----------
+        img : ndarray
+            2D image array.
+        p1 : array-like
+            Starting point [x, y].
+        p2 : array-like
+            Ending point [x, y].
+        npts : int, optional
+            Number of sample points. Default is 300.
+
+        Returns
+        -------
+        ndarray
+            Sampled intensity values along the line.
+        """
         x = np.linspace(p1[0], p2[0], npts)
         y = np.linspace(p1[1], p2[1], npts)
         xi = np.clip(np.round(x).astype(int), 0, self.nx - 1)
@@ -771,7 +928,24 @@ class NDImageViewer:
         return img[yi, xi]
 
     def _get_distance_to_point(self, p1, p2, threshold=10):
-        """Check if a point is near p1 or p2 within threshold pixels."""
+        """Compute distance between two points and check if within threshold.
+
+        Parameters
+        ----------
+        p1 : array-like
+            First point [x, y].
+        p2 : array-like
+            Second point [x, y].
+        threshold : float, optional
+            Distance threshold in pixels. Default is 10.
+
+        Returns
+        -------
+        endpoint : str or None
+            'p1' or 'p2' if within threshold, otherwise None.
+        distance : float
+            Computed distance, or None if not within threshold.
+        """
         dist_p1 = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
         dist_p2 = np.sqrt((self.data.shape[-1] - p2[0])**2 + (self.data.shape[-2] - p2[1])**2)
         
@@ -782,7 +956,25 @@ class NDImageViewer:
         return None, None
 
     def _get_distance_to_line(self, p1, p2, point, threshold=10):
-        """Check if a point is near a line segment within threshold pixels."""
+        """Compute perpendicular distance from a point to a line segment.
+
+        Parameters
+        ----------
+        p1 : array-like
+            Line segment start [x, y].
+        p2 : array-like
+            Line segment end [x, y].
+        point : array-like
+            Query point [x, y].
+        threshold : float, optional
+            Distance threshold in pixels. Default is 10.
+
+        Returns
+        -------
+        distance : float
+            Perpendicular distance to the line segment, or ``inf`` if the
+            perpendicular from the point does not intersect the segment.
+        """
         x1, y1 = p1
         x2, y2 = p2
         x0, y0 = point
@@ -804,6 +996,11 @@ class NDImageViewer:
     # Events
     # ----------------------------------------------------
     def _connect_events(self):
+        """Connect matplotlib event handlers for interactivity.
+
+        Connects slider callbacks, button click handlers, and mouse event
+        handlers for image interaction.
+        """
         self.s_vmin.on_changed(self._update_image)
         self.s_vmax.on_changed(self._update_image)
 
@@ -822,6 +1019,17 @@ class NDImageViewer:
         self.fig.canvas.mpl_connect("pick_event", self._on_pick)
 
     def _update_image(self, val=None):
+        """Update the displayed image and rescale it based on current settings.
+
+        Called when sliders change or scale mode is switched. Fetches the
+        current image, applies the selected scaling mode, updates the display,
+        and recomputes cut profiles.
+
+        Parameters
+        ----------
+        val : float, optional
+            Value from slider (unused, present for callback compatibility).
+        """
         if self.ndim >= 3:
             self.i_image = int(self.s_img.val)
         if self.ndim == 4:
@@ -850,10 +1058,28 @@ class NDImageViewer:
         self._update_profiles()
 
     def _change_scale(self, label):
+        """Switch the scaling mode and update the image.
+
+        Parameters
+        ----------
+        label : str
+            Scale mode name ('Linear', 'Log', 'Asinh', or 'Zscale').
+        """
         self.scale_mode = label.lower()
         self._update_image()
 
     def _on_click(self, event):
+        """Handle mouse button press events on the image.
+
+        Supports:
+        - Drawing cuts (two clicks to define start and end points)
+        - Selecting cut endpoints or lines for dragging
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.MouseEvent
+            Mouse event with xdata, ydata, and inaxes attributes.
+        """
         if event.inaxes != self.ax_img:
             return
 
@@ -893,6 +1119,15 @@ class NDImageViewer:
                 return
 
     def _on_drag(self, event):
+        """Handle mouse drag events for moving cuts or endpoints.
+
+        Allows dragging individual endpoints or translating entire cuts.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.MouseEvent
+            Mouse motion event.
+        """
         if event.inaxes != self.ax_img or self.drag_mode is None or self.dragged_cut is None:
             return
 
@@ -919,14 +1154,31 @@ class NDImageViewer:
             self._update_profiles()
 
     def _on_release(self, event):
+        """Handle mouse button release events to end dragging.
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.MouseEvent
+            Mouse release event.
+        """
         self.drag_mode = None
         self.dragged_cut = None
         self.dragged_endpoint = None
 
     def _on_pick(self, event):
-        """Handle pick events on cut lines (alternative selection method)."""
+        """Handle pick events on cut lines (currently unused).
+
+        Parameters
+        ----------
+        event : matplotlib.backend_bases.PickEvent
+            Pick event (fires when artist is clicked with appropriate picker tolerance).
+        """
         pass
 
     # ----------------------------------------------------
     def show(self):
+        """Display the interactive viewer window.
+
+        Calls ``plt.show()`` to render the figure and start the interactive loop.
+        """
         plt.show()
