@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import matplotlib.gridspec as gd
 from astroquery.mast import Observations
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import Slider, RadioButtons, Button
 from matplotlib.lines import Line2D
 from matplotlib.colors import Normalize, LogNorm
@@ -9,6 +11,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import mad_std
 from scipy.interpolate import interp1d
+import matplotlib
 import multiprocessing
 from pathlib import Path
 from glob import glob
@@ -4197,3 +4200,809 @@ class NDImageViewer:
         Calls ``plt.show()`` to render the figure and start the interactive loop.
         """
         plt.show()
+
+
+class SpectroscopicLC(object):
+    """Analyze and fit multi-wavelength time-series spectroscopic data.
+
+    This class provides tools for handling spectroscopic light curves where
+    flux is measured as a function of both time and wavelength. It supports
+    binning spectral data into channels, fitting individual wavelength bins
+    using ``juliet``, parallel processing of multiple channels, and
+    visualization of spectral transit/eclipse signatures and systematics.
+
+    Parameters
+    ----------
+    times : ndarray
+        1D array of time stamps (in BJD or similar) with shape (N_frames,).
+    lc : ndarray
+        2D array of flux measurements with shape (N_frames, N_wavelengths).
+        Each row is a time frame; each column is a wavelength bin.
+    lc_errs : ndarray
+        2D array of flux uncertainties with the same shape as ``lc``.
+    wavelengths : ndarray
+        1D array of wavelength values (in microns or other units) corresponding
+        to each column of ``lc``. Shape is (N_wavelengths,).
+    gp_pars : dict or None, optional
+        Dictionary mapping instrument names to arrays of Gaussian Process (GP)
+        regressor values (e.g., time, roll angle). Used when fitting with GP
+        systematics. Default is ``None``.
+    lin_pars : dict or None, optional
+        Dictionary mapping instrument names to 2D arrays of linear regressor
+        values (shape: N_frames x N_regressors). Used for linear detrending.
+        Default is ``None``.
+    priors : callable or None, optional
+        A callable that accepts a channel name (string) and returns a juliet-format priors 
+        for that channel. Required for fitting
+        via :meth:`analyse_lc_parallel`. Default is ``None``.
+    pout : str, optional
+        Output directory for saving results, intermediate data, and pickled
+        light curves. Default is the current working directory.
+
+    Attributes
+    ----------
+    times : ndarray
+        Input time array.
+    lc : ndarray
+        Input 2D light-curve array.
+    lc_errs : ndarray
+        Input 2D error array.
+    wavelengths : ndarray
+        Input wavelength array.
+    gp_pars, lin_pars : dict or None
+        Input systematics parameters.
+    priors : callable or None
+        Input priors function.
+    pout : str
+        Output directory.
+    col_st, col_end : ndarray
+        Start and end column indices for each binned channel (populated by
+        :meth:`col_spec`).
+    spectral_lcs_dict : dict
+        Dictionary containing binned spectral light curves and metadata,
+        populated by :meth:`generating_lightcurves`. Keys include 'lc', 'err',
+        'wave', and 'wave_bin'.
+    wav, wav_bin : ndarray
+        Wavelength array and half-widths for each bin (populated by
+        :meth:`plot_parameter_spectrum`).
+    pars_med, pars_up, pars_lo : ndarray
+        Median and upper/lower credible interval bounds on fitted parameters
+        as a function of wavelength (populated by :meth:`plot_parameter_spectrum`).
+    qua_white : tuple
+        Quantiles (median, upper, lower) of the white-light parameter
+        (populated by :meth:`plot_parameter_spectrum`).
+
+    Main methods
+    ------------
+    generating_lightcurves(ch_nos=None)
+        Extract and optionally bin spectral light curves into channels.
+    bin_lightcurve(unbinned_lc, unbinned_lc_err)
+        Inverse-variance weighted binning of light curves along wavelength direction.
+    white_light_lc()
+        Compute the white-light (all-wavelength) light curve.
+    analyse_lc_parallel(nthreads, ch_nos=None, juliet_fit_kwargs={})
+        End-to-end parallel analysis: bin, organize, and fit all channels.
+    plot_parameter_spectrum(parameter, bins=None, post_size=10000, ...)
+        Plot fitted parameter values as a function of wavelength.
+    plot2Ddata(cmap='plasma')
+        2D heatmap of spectral light curves vs time.
+    plot2D_data_model_resids(cmap='plasma', detrend=False, ...)
+        Side-by-side 2D heatmaps of data, model, and residuals.
+    joint_fake_allan_deviation(binmax=10, method='pipe', timeunit=None)
+        Combined noise vs binning plot across all channels.
+
+    Notes
+    -----
+    - All fitting is performed using the ``juliet`` package (Espinoza et al. 2019).
+    - Parallel processing uses Python's ``multiprocessing.Pool``.
+    - Results are saved as pickled dictionaries and ASCII text files to ``pout``.
+    - Methods check for existing output files and skip re-computation if files
+      are already present (useful for resuming interrupted analyses).
+
+    Examples
+    --------
+    Create and analyze a spectroscopic dataset:
+
+    >>> import numpy as np
+    >>> times = np.linspace(2459000, 2459001, 100)
+    >>> wavelengths = np.linspace(1.1, 1.7, 50)
+    >>> lc = np.random.normal(1.0, 0.01, (100, 50))
+    >>> lc_errs = np.full_like(lc, 0.005)
+
+    >>> def get_priors(ch_name):
+    ...     return juliet.utils.priors()
+
+    >>> spec = SpectroscopicLC(times, lc, lc_errs, wavelengths,
+    ...                        priors=get_priors, pout='./results')
+    >>> spec.analyse_lc_parallel(nthreads=4, ch_nos=10)
+    >>> fig, ax = spec.plot_parameter_spectrum('p_p1', bins=10, plot_white=True)
+    """
+    def __init__(self, times, lc, lc_errs, wavelengths, gp_pars=None, lin_pars=None, priors=None, pout=os.getcwd()):
+        # Dimensions of lc should be (nframes, ncols)
+        self.times = times
+        self.lc = lc
+        self.lc_errs = lc_errs
+        self.wavelengths = wavelengths
+        self.gp_pars = gp_pars
+        self.lin_pars = lin_pars
+        self.priors = priors
+        self.pout = pout
+
+    def col_spec(self, ch_nos):
+        """Given a number of total number of channels, this function gives an array containing
+        start and end column for each channel"""
+        if ch_nos != 1:
+            col_in_1_ch = round(self.lc.shape[1]/ch_nos)
+            self.col_st = np.arange(0, self.lc.shape[1]-col_in_1_ch, col_in_1_ch, dtype=int)
+            self.col_end = np.arange(0+col_in_1_ch, self.lc.shape[1], col_in_1_ch, dtype=int)
+        else:
+            self.col_st, self.col_end = np.array([0]), np.array([self.lc.shape[1]])
+        
+        if self.col_end[-1] != self.lc.shape[1]:
+            self.col_st = np.hstack((self.col_st, self.col_end[-1]))
+            self.col_end = np.hstack((self.col_end, self.lc.shape[1]))
+
+    def generating_lightcurves(self, ch_nos=None):
+        """Extract and optionally bin spectral light curves into channels.
+
+        This method either bins the original light curve into ``ch_nos`` channels
+        (using inverse-variance weighting) or uses the original wavelength resolution.
+        Results are saved as a pickled dictionary and stored in
+        ``self.spectral_lcs_dict``.
+
+        If a pickle file for the requested binning already exists, it is loaded
+        instead of recomputing.
+
+        Parameters
+        ----------
+        ch_nos : int or None, optional
+            Number of channels to bin the light curve into. If ``None``, use
+            native wavelength resolution (no binning). Default is ``None``.
+
+        Returns
+        -------
+        None
+            Results are stored in ``self.spectral_lcs_dict`` with keys:
+
+            - 'lc' : ndarray
+                Binned light curves (shape: N_frames x N_channels).
+            - 'err' : ndarray
+                Binned flux errors (same shape as 'lc').
+            - 'wave' : ndarray
+                Central wavelength of each bin.
+            - 'wave_bin' : ndarray
+                Half-width (or full width) of each wavelength bin.
+
+        Notes
+        -----
+        The output is pickled to
+        ``pout/spectroscopic_lc_ch_<ch_nos>.pkl`` for future loading.
+        """
+        if ch_nos == None:
+            fname = self.pout + '/spectroscopic_lc_ch_' + str(self.lc.shape[1]) + '.pkl'
+        else:
+            fname = self.pout + '/spectroscopic_lc_ch_' + str(ch_nos) + '.pkl'
+
+        if not Path(fname).exists():
+            # Columns
+            if ch_nos != None:
+                self.col_spec(ch_nos)
+                # Creating spectral lc array
+                spec_lc, spec_err_lc = np.zeros( ( self.lc.shape[0], len(self.col_st) ) ), np.zeros( ( self.lc.shape[0], len(self.col_st) ) )
+                wavs, wav_bin_size = np.zeros( len(self.col_st) ), np.zeros( len(self.col_st) )
+                for i in range(len(self.col_st)):
+                    spec_lc[:,i], spec_err_lc[:,i] = self.bin_lightcurve( self.lc[:, self.col_st[i]:self.col_end[i]], \
+                                                                          self.lc_errs[:, self.col_st[i]:self.col_end[i]] )
+                    if self.col_end[i] != self.lc.shape[1]:
+                        wavs[i] = ( self.wavelengths[self.col_st[i]] + self.wavelengths[self.col_end[i]] )/2
+                        wav_bin_size[i] = np.abs( self.wavelengths[self.col_st[i]] - self.wavelengths[self.col_end[i]] )
+                    else:
+                        wavs[i] = ( self.wavelengths[self.col_st[i]] + self.wavelengths[self.col_end[i]-1] )/2
+                        wav_bin_size[i] = np.abs( self.wavelengths[self.col_st[i]] - self.wavelengths[self.col_end[i]-1] )
+            else:
+                spec_lc, spec_err_lc = self.lc, self.lc_errs
+                wavs, wav_bin_size = self.wavelengths, np.append(np.diff(self.wavelengths), np.diff(self.wavelengths)[-1])
+
+            # Save the light curves
+            self.spectral_lcs_dict = {}
+            self.spectral_lcs_dict['lc'], self.spectral_lcs_dict['err'] = spec_lc, spec_err_lc
+            self.spectral_lcs_dict['wave'], self.spectral_lcs_dict['wave_bin'] = wavs, wav_bin_size
+
+            if ch_nos == None:
+                pickle.dump(self.spectral_lcs_dict, open(self.pout + '/spectroscopic_lc_ch_' + str(self.lc.shape[1]) + '.pkl','wb'))
+            else:
+                pickle.dump(self.spectral_lcs_dict, open(self.pout + '/spectroscopic_lc_ch_' + str(ch_nos) + '.pkl','wb'))
+        else:
+            print('>>>> --- The spectroscopic lightcurves already exists...')
+            print('         Loading them...')
+            self.spectral_lcs_dict = pickle.load( open(fname, 'rb') )
+
+    
+    def bin_lightcurve(self, unbinned_lc, unbinned_lc_err):
+        """Perform inverse-variance weighted binning of a light curve.
+
+        Each output bin is the weighted average of input values, where weights
+        are the inverse squares of the input uncertainties. Output uncertainties
+        are computed by propagating input uncertainties through the weighted
+        average formula.
+
+        Parameters
+        ----------
+        unbinned_lc : ndarray
+            2D array of unbinned flux values (shape: N_frames x N_wavelengths).
+        unbinned_lc_err : ndarray
+            2D array of flux uncertainties (same shape as ``unbinned_lc``).
+
+        Returns
+        -------
+        bin_lc : ndarray
+            1D array of binned flux values (shape: N_frames,).
+        bin_lc_err : ndarray
+            1D array of binned flux uncertainties (same shape as ``bin_lc``).
+        """
+        # shape of both arrays are: (nframes, ncols)
+        weights = 1 / unbinned_lc_err**2
+        bin_lc = np.nansum(unbinned_lc * weights, axis=1) / np.nansum(weights, axis=1)
+        bin_lc_err = ( 1 / np.nansum(weights, axis=1) ) * np.sqrt( np.nansum( (weights**2) * (unbinned_lc_err**2), axis=1 ) )
+
+        return bin_lc, bin_lc_err
+    
+    def white_light_lc(self):
+        """Compute the white-light (all-wavelength) light curve.
+
+        Bins the entire 2D light curve (all wavelengths combined) into a single
+        1D time-series using inverse-variance weighting.
+
+        Returns
+        -------
+        white_lc : ndarray
+            1D array of white-light flux values.
+        white_lc_err : ndarray
+            1D array of white-light flux uncertainties.
+        """
+        return self.bin_lightcurve(unbinned_lc=self.lc, unbinned_lc_err=self.lc_errs)
+    
+    # MultiProcessing helper function (does the actual fitting)
+    def fit_lc(self, lightcurves, ch_name):
+        """Inteernal helper function for multiprocessing.
+        This function fits lightcurve for one spectroscopic channel"""
+        print('---------------------------------')
+        print('Working on Channel: ' + ch_name)
+        print('')
+        # Output folder
+        pout = self.pout + '/' + ch_name
+        f15 = Path(pout + '/_dynesty_DNS_posteriors.pkl')
+        f16 = Path(pout + '/model_resids.dat')
+        f17 = Path(pout + '/posteriors.dat')
+        if f15.exists() and f16.exists() and f17.exists():
+            print('>>>> --- The result files already exists...')
+            print('         Continuing to the next channel...')
+            res = np.zeros(10)
+        else:
+            # Extracting the data
+            tim9, fl9, fle9 = lightcurves['times'], lightcurves['lc'], lightcurves['err']
+            
+            # Removing Nan values
+            tim7, fl7, fle7 = tim9[~np.isnan(fl9)], fl9[~np.isnan(fl9)], fle9[~np.isnan(fl9)]
+
+            # Outlier removal
+            #msk2 = utl.outlier_removal(tim7, fl7, fle7, clip=10, msk1=False)
+            #tim7, fl7, fle7 = tim7[msk2], fl7[msk2], fle7[msk2]
+
+            # Normalizing the lightcurve
+            tim7, fl7, fle7 = tim7, fl7/np.median(fl7), fle7/np.median(fl7)
+
+            # Making data such that juliet can understand
+            tim, fl, fle = {}, {}, {}
+            tim[ch_name], fl[ch_name], fle[ch_name] = tim7, fl7, fle7
+
+
+            if type( lightcurves['lins'] ) == type( None ):
+                lin_pars = None
+            else:
+                lin_pars = {}
+                lin_pars[ch_name] = lightcurves['lins']
+
+            if type( lightcurves['gp'] ) == type( None ):
+                gp_pars = None
+            else:
+                gp_pars = {}
+                gp_pars[ch_name] = lightcurves['gp']
+
+            # Fitting
+            dataset = juliet.load(priors=self.priors(ch_name), t_lc=tim, y_lc=fl, yerr_lc=fle, linear_regressors_lc=lin_pars, GP_regressors_lc=gp_pars, out_folder=pout)
+            res = dataset.fit(sampler = 'dynamic_dynesty', **self.juliet_fit_kwargs)#, nthreads=8)
+
+            # Some plots
+            model = res.lc.evaluate(ch_name)
+            residuals = fl[ch_name]-model
+
+            data12 = np.vstack((model, residuals))
+            np.savetxt(pout + '/model_resids.dat', np.transpose(data12))
+
+            print('>>>> --- Done!!')
+        return res
+    
+    # Function that does the multiprocessing
+    def multi_fit_lcs(self, lightcurves, nthreads=4):
+        input_data = [(lightcurves[lc], lc) for lc in lightcurves]
+            
+        with multiprocessing.Pool(nthreads) as p:
+            result_list = p.starmap(self.fit_lc, input_data)
+                    
+        return np.array(result_list)
+    
+    def analyse_lc_parallel(self, nthreads, ch_nos=None, juliet_fit_kwargs={}):
+        """End-to-end parallel analysis: bin, organize, and fit lightcurves from all channels.
+
+        This high-level wrapper orchestrates the full analysis pipeline:
+        1. Bins the spectral light curve into channels via :meth:`generating_lightcurves`
+        2. Organizes the data into a format suitable for fitting
+        3. Calls :meth:`multi_fit_lcs` to fit all channels in parallel
+
+        Parameters
+        ----------
+        nthreads : int
+            Number of parallel threads to use for fitting.
+        ch_nos : int or None, optional
+            Number of wavelength channels to bin into. If ``None``, use native
+            wavelength resolution. Default is ``None``.
+        juliet_fit_kwargs : dict, optional
+            Keyword arguments to forward to ``juliet.dataset.fit(...)``,
+            such as ``sampler='dynamic_dynesty'``, ``nthreads=8``, etc.
+            Default is an empty dictionary.
+
+        Returns
+        -------
+        None
+            Results are written to ``pout`` and its subdirectories.
+
+        Notes
+        -----
+        Requires that ``self.priors`` is a callable that returns a priors
+        for each channel name.
+        """
+        # Setting juliet_fit_kwargs
+        self.juliet_fit_kwargs = juliet_fit_kwargs
+
+        # Generating the data
+        ## Bin the data, if necessary
+        self.generating_lightcurves(ch_nos=ch_nos)
+
+        # Storing all lightcurves in a big dictionary
+        all_lightcurve_data = {}
+        for i in range( self.spectral_lcs_dict['lc'].shape[1] ):
+            # Storing all lightcurves in a big dictionary
+            all_lightcurve_data['CH' + str(i)] = {}
+            
+            ## And now storing the actual lightcurve data
+            all_lightcurve_data['CH' + str(i)]['times'] = self.times
+            all_lightcurve_data['CH' + str(i)]['lc'] = self.spectral_lcs_dict['lc'][:,i]
+            all_lightcurve_data['CH' + str(i)]['err'] = self.spectral_lcs_dict['err'][:,i]
+
+            ## Storing linear and GP parameters, if provided (None, otherwise)
+            all_lightcurve_data['CH' + str(i)]['lins'] = self.lin_pars
+            all_lightcurve_data['CH' + str(i)]['gp'] = self.gp_pars
+        
+        # Now, analysing them
+        _ = self.multi_fit_lcs(all_lightcurve_data, nthreads=nthreads)
+
+    def plot_parameter_spectrum(self, parameter, bins=None, post_size=10000, bin_method='mean', ppm=False, plot_white=False):
+        """Plot a fitted parameter as a function of wavelength (a spectrum).
+
+        Loads posterior samples for a parameter from all fitted channels,
+        optionally re-bins them in the wavelength direction, and plots
+        median with credible intervals as a function of wavelength.
+
+        Parameters
+        ----------
+        parameter : str
+            Name of the parameter to plot (e.g., 'p_p1', 'fp_p1', 'C1_p1').
+            Should match the parameter naming convention used by juliet.
+        bins : int or None, optional
+            Number of wavelength bins to use for the output spectrum. If ``None``
+            or equal to the native number of channels, no re-binning is performed.
+            Default is ``None``.
+        post_size : int, optional
+            Number of posterior samples to draw from each channel. Default is 10000.
+        bin_method : {'mean', 'median', 'weighted_average'}, optional
+            Method for combining posteriors across wavelength bins.
+            Default is ``'mean'``.
+        ppm : bool, optional
+            If ``True``, scale parameter values to ppm (multiply by 1e6).
+            Useful for small parameters like occultation depths. Default is ``False``.
+        plot_white : bool, optional
+            If ``True``, overplot the white-light (all-wavelength) parameter
+            value as a horizontal band with credible interval. Default is ``False``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The created figure.
+        axs : matplotlib.axes.Axes
+            The plot axes.
+
+        Notes
+        -----
+        Posterior samples are loaded from files named like
+        ``pout/CH<i>/*_posteriors.pkl``.
+        """
+        ## First, let's put all posteriros in a big 2D array
+        all_posteriors = []
+        for i in range( self.spectral_lcs_dict['lc'].shape[1] ):
+            fname = glob( self.pout + '/CH' + str(i) + '/*_posteriors.pkl' )[0]
+            post = pickle.load( open(fname, 'rb') )
+            all_posteriors.append( np.random.choice( post['posterior_samples'][parameter + '_CH' + str(i)], size=post_size ) )
+        posteriors = np.transpose( np.vstack( all_posteriors ) )
+
+        ## Calculating the white light parameter value
+        if bin_method == 'mean':
+            white_post = np.mean( posteriors, axis=1 )
+        elif bin_method == 'median':
+            white_post = np.median( posteriors, axis=1 )
+        elif bin_method == 'weighted_average':
+            white_post = np.average( posteriors, axis=1, weights=1/np.std(posteriors, axis=0)**2 )
+        else:
+            raise ValueError('>>> --- bin_method not recognized. Please use mean, median or weighted_average.')
+        
+        ### Quantiles
+        self.qua_white = juliet.utils.get_quantiles( white_post )
+
+        if ( bins == self.spectral_lcs_dict['lc'].shape[1] ) or ( bins == None ):
+            ## Wavelengths
+            self.wav, self.wav_bin = self.spectral_lcs_dict['wave'], self.spectral_lcs_dict['wave_bin']/2
+            
+            ## If bin size is the same as the column size, then we don't perform any binning
+            self.pars_med, self.pars_up, self.pars_lo = np.zeros( self.spectral_lcs_dict['lc'].shape[1] ), np.zeros( self.spectral_lcs_dict['lc'].shape[1] ), np.zeros( self.spectral_lcs_dict['lc'].shape[1] )
+            for i in range( self.spectral_lcs_dict['lc'].shape[1] ):
+                ## And, appending parameter values
+                qua = juliet.utils.get_quantiles( posteriors[:,i] )
+                self.pars_med[i], self.pars_up[i], self.pars_lo[i] = qua[0], qua[1] - qua[0], qua[0] - qua[2]
+
+        else:
+            ## Wavelengths
+            native_wav, native_wav_bin = self.spectral_lcs_dict['wave'], self.spectral_lcs_dict['wave_bin']
+
+            # Column location, for low resolution eclipse spectrum
+            col_in_1_ch = round( len(native_wav) / bins )
+            col_st = np.arange(0, len(native_wav)-col_in_1_ch, col_in_1_ch, dtype=int)
+            col_end = np.arange(0+col_in_1_ch, len(native_wav), col_in_1_ch, dtype=int)
+            if col_end[-1] != len(native_wav):
+                col_st = np.hstack(( col_st, col_end[-1] ))
+                col_end = np.hstack(( col_end, len(native_wav) ))
+
+            # For binning the spectrum
+            self.pars_med, self.pars_up, self.pars_lo = np.zeros( len(col_st) ), np.zeros( len(col_st) ), np.zeros( len(col_st) )
+            self.wav, self.wav_bin = np.zeros( len(col_st) ), np.zeros( len(col_end) )
+            # And performing actual binning
+            for i in range(len(col_st)):
+                ## Calculating the median of the posteriors in the bin
+                if bin_method == 'mean':
+                    fp12 = np.mean( posteriors[:,col_st[i]:col_end[i]], axis=1 )
+                elif bin_method == 'median':
+                    fp12 = np.median( posteriors[:,col_st[i]:col_end[i]], axis=1 )
+                elif bin_method == 'weighted_average':
+                    fp12 = np.average( posteriors[:,col_st[i]:col_end[i]], axis=1, weights=1/np.std( posteriors[:,col_st[i]:col_end[i]], axis=0 )**2 )
+                else:
+                    raise ValueError('>>> --- bin_method not recognized. Please use mean, median or weighted_average.')
+                
+                qua_fp12 = juliet.utils.get_quantiles(fp12)
+                self.pars_med[i], self.pars_up[i], self.pars_lo[i] = qua_fp12[0], qua_fp12[1]-qua_fp12[0], qua_fp12[0]-qua_fp12[2]
+                # For wavelength bins
+                if col_end[i] != len(native_wav):
+                    self.wav[i] = ( native_wav[col_st[i]] + native_wav[col_end[i]] ) / 2
+                    self.wav_bin[i] = np.abs( native_wav[col_st[i]] - native_wav[col_end[i]] ) / 2
+                else:
+                    self.wav[i] = ( native_wav[col_st[i]] + native_wav[col_end[i]-1] ) / 2
+                    self.wav_bin[i] = np.abs( native_wav[col_st[i]] - native_wav[col_end[i]-1] ) / 2
+        
+
+        # ---------------------------------------
+        #.    Now, plotting the spectrum
+        # ---------------------------------------
+        if ppm:
+            self.pars_med *= 1e6
+            self.pars_up *= 1e6
+            self.pars_lo *= 1e6
+            self.qua_white = ( self.qua_white[0]*1e6, self.qua_white[1]*1e6, self.qua_white[2]*1e6 )
+
+        fig, axs = plt.subplots()
+        axs.errorbar(self.wav, self.pars_med, yerr=[self.pars_lo, self.pars_up], xerr=self.wav_bin, fmt='o', c='orangered', mfc='white', elinewidth=1.5, capthick=1.5, capsize=3.)
+
+        if plot_white:
+            wav12 = np.linspace( min(self.wav)-max(self.wav_bin)*2, max(self.wav)+max(self.wav_bin)*2, 1000 )
+            axs.axhline(self.qua_white[0], color='cornflowerblue', ls='-', zorder=10)
+            axs.fill_between(wav12, self.qua_white[2], self.qua_white[1], color='cornflowerblue', alpha=0.3)
+
+        axs.set_xlim( min(self.wav)-max(self.wav_bin)*1.5, max(self.wav)+max(self.wav_bin)*1.5 )
+        
+        axs.set_xlabel('Wavelength')
+        axs.set_ylabel(parameter)
+        axs.set_title(f'Spectral {parameter} spectrum')
+        
+        return fig, axs
+    
+    def plot2Ddata(self, cmap='plasma'):
+        """Create a 2D heatmap of spectral light curves (flux vs time) vs wavelength.
+
+        Parameters
+        ----------
+        cmap : str, optional
+            Matplotlib colormap name. Default is ``'plasma'``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The created figure.
+        ax1 : matplotlib.axes.Axes
+            The plot axes.
+        im1 : matplotlib.image.AxesImage
+            The image object.
+        cbar : matplotlib.colorbar.Colorbar
+            The colorbar object.
+        """
+        # Adjusting the times to time since beginning in hours
+        tim = ( self.times - self.times[0] ) * 24
+
+        ## Preparing the data
+        norm_lcs = np.copy( self.lc )
+
+        fig, ax1 = plt.subplots( figsize=(7, 7) )
+        # Data
+        im1 = ax1.imshow(norm_lcs.T, interpolation='none', cmap=cmap, aspect = 'auto', extent=[tim[0], tim[-1], self.wavelengths[-1], self.wavelengths[0]])
+        im1.set_clim( [ np.nanmedian(norm_lcs) - 5*mad_std(norm_lcs), np.nanmedian(norm_lcs) + 5*mad_std(norm_lcs) ] )
+        plt.ylabel(r'Wavelength [$\mu$m]')
+        plt.xlabel('Time from beginning [h]')
+
+        # Colorbar:
+        divider = make_axes_locatable(ax1)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+
+        cbar = fig.colorbar(im1, shrink = 0.08, cax=cax)
+        cbar.ax.get_yaxis().labelpad = 20
+        cbar.ax.set_ylabel('Relative flux', rotation=270)#, fontsize = 15)
+
+        return fig, ax1, im1, cbar
+    
+    def plot2D_data_model_resids(self, cmap='plasma', detrend=False, binwidth=None, ppm=False, **kwargs):
+        """Create side-by-side 2D heatmaps of data, model, and residuals.
+
+        Loads the fitted models and residuals from all channels and creates
+        three synchronized heatmaps showing the full spectro-temporal evolution
+        of the data, fit quality, and systematics.
+
+        Parameters
+        ----------
+        cmap : str, optional
+            Matplotlib colormap name. Default is ``'plasma'``.
+        detrend : bool, optional
+            If ``True``, load and plot detrended data (subtracting GP and
+            linear systematics). Requires additional ``juliet`` processing
+            and may be slow. If ``False``, plot raw data. Default is ``False``.
+        binwidth : float or None, optional
+            Time binwidth (in days) for additional temporal binning of the
+            data/model/residuals. If ``None``, no binning is performed.
+            Default is ``None``.
+        ppm : bool, optional
+            If ``True``, express data and model in ppm relative to unity.
+            Residuals are always in ppm. Default is ``False``.
+        **kwargs : dict
+            Forwarded to the ``julietPlots`` constructor when ``detrend=True``
+            (e.g., ``N=1000`` for the number of posterior samples).
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The created figure with three subplots.
+        axs : ndarray
+            Array of three Axes objects (data, model, residuals).
+        im_list : list
+            List of three AxesImage objects (useful for colorbars).
+        """
+        # binwidth = None means that you should not perform any binning (in time)
+        # We don't perform any binning in wavelength direction -- please do that before fitting the light curves
+        # Detrend = True detrends the data and plot detrended model instead.
+        data = np.zeros( ( len(self.spectral_lcs_dict['wave']), len(self.times) ) )
+        models = np.zeros( data.shape )
+        resids = np.zeros( data.shape )
+
+        ## Loading the wavelengths
+        waves = self.spectral_lcs_dict['wave']
+
+        min_mod, max_mod = 1e10, -1e10
+        for c in range( self.spectral_lcs_dict['lc'].shape[1] ):
+            if not detrend:
+                ## First, we need data
+                tim, fl = np.loadtxt( self.pout + '/CH' + str(c) + '/lc.dat', usecols=(0,1), unpack=True )
+                ## And the model and residuals
+                model, resid = np.loadtxt( self.pout + '/CH' + str(c) + '/model_resids.dat', usecols=(0,1), unpack=True )
+            else:
+                ## Well, if detrend = True, then we need to detrend the data (that can take a while)
+                data = julietPlots(input_folder=self.pout + '/CH' + str(c), **kwargs)
+                ## We now need to detrend the data and the calculate the detrended model
+                data.detrend_data(phmin=0.8, instruments='CH' + str(c))
+                data.detrend_model(phmin=0.8, instruments='CH' + str(c), highres=False)
+
+                # Time data
+                ## Array that sort any array according to time
+                idx_time = np.argsort( data.dataset.times_lc['CH' + str(c)] )
+                tim = data.dataset.times_lc['CH' + str(c)][idx_time]
+                resid = ( data.dataset.data_lc['CH' + str(c)] - data.models_all_ins['CH' + str(c)][1] )[idx_time]
+
+                ## Detrended dataset
+                fl = data.detrended_data['CH' + str(c)][idx_time]
+
+                ## Detrended model
+                model = data.planet_only_models['CH' + str(c)][1][idx_time]
+
+            if ppm:
+                fl, model = ( fl - 1. ) * 1e6, ( model - 1. ) * 1e6
+            ## Residuals are always in ppm
+            resid = resid * 1e6
+
+            if binwidth is not None:
+                _, fl, _, _ =  utils.lcbin(time=tim, flux=fl, binwidth=binwidth)
+                _, model, _, _ = utils.lcbin(time=tim, flux=model, binwidth=binwidth)
+                _, resid, _, _ = utils.lcbin(time=tim, flux=resid, binwidth=binwidth)
+
+            # And putting them in a big array
+            data[c, :], models[c, :], resids[c, :] = fl, model, resid
+            
+            ## Calculating the minimum and maximum values of the model
+            if np.nanmin(model) < min_mod:
+                min_mod = np.nanmin(model)
+            if np.nanmax(model) > max_mod:
+                max_mod = np.nanmax(model)
+
+        # And, finally, the plotting
+        # Convering time to hours
+        tim = ( tim - tim[0] ) * 24
+        
+        # Colorbars
+        cmin1, cmax1 = min_mod-0.005*min_mod, max_mod+0.005*max_mod
+        norm1 = matplotlib.colors.Normalize(vmin=cmin1, vmax=cmax1, clip=True)
+        mapper1 = cm.ScalarMappable(norm=norm1, cmap=cmap)
+        mapper1.set_array([])
+
+        cmin2, cmax2 = np.nanmedian(resids)-3*mad_std(resids), np.nanmedian(resids)+3*mad_std(resids)
+        norm2 = matplotlib.colors.Normalize(vmin=cmin2, vmax=cmax2, clip=True)
+        mapper2 = cm.ScalarMappable(norm=norm2, cmap=cmap)
+        mapper2.set_array([])
+
+        # And plotting it
+        fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(15,5), sharex=True, sharey=True)
+
+        ## First box: plotting the data 
+        im1 = axs[0].imshow(data, aspect='auto', cmap=cmap, interpolation='none', extent=[tim[0], tim[-1], waves[-1], waves[0]])
+        im1.set_clim([cmin1, cmax1])
+        
+        ## Second box: plotting the model
+        im2 = axs[1].imshow(models, aspect='auto', cmap=cmap, interpolation='none', extent=[tim[0], tim[-1], waves[-1], waves[0]])
+        im2.set_clim([cmin1, cmax1])
+
+        ## First colorbar
+        cbar1 = plt.colorbar(mapper1, ax=np.array([axs[0],axs[1]]))#, location='top')
+        if ppm:
+            cbar1.set_label('Relative flux [ppm]', rotation=270, labelpad=20)
+        else:
+            cbar1.set_label('Relative flux', rotation=270, labelpad=20)
+        cbar1.set_ticks(ticks=np.linspace(cmin1, cmax1, 7))
+        cbar1.set_ticklabels(ticklabels=[ "{:.3f}".format( i ) for i in np.linspace(cmin1, cmax1, 7) ] )
+
+        im3 = axs[2].imshow(resids, aspect='auto', cmap=cmap, interpolation='none', extent=[tim[0], tim[-1], waves[-1], waves[0]])
+        im3.set_clim([cmin2, cmax2])
+        cbar2 = plt.colorbar(mapper2, ax=axs[2])#, location='top')
+        cbar2.set_label('Residuals [ppm]', rotation=270, labelpad=20)
+
+        cbar2.set_ticks( ticks=np.linspace(cmin2, cmax2, 7) )
+        cbar2.set_ticklabels(ticklabels=[ "{:d}".format( int(i) ) for i in np.linspace(cmin2, cmax2, 7) ] )
+
+        fig.supxlabel('Time since beginning [hr]', fontsize=15)
+        axs[0].set_ylabel(r'Wavelength [$\mu$m]')
+
+        if detrend:
+            axs[0].set_title('Detrended data')
+        else:
+            axs[0].set_title('Data')
+        axs[1].set_title('Model')
+        axs[2].set_title('Residuals')
+
+        return fig, axs, [im1, im2, im3]
+    
+    def joint_fake_allan_deviation(self, binmax=10, method='pipe', timeunit=None):
+        """Plot combined noise-vs-binning curves across all spectroscopic channels.
+
+        Computes the "Allan deviation" (actually the MAD-based noise as a
+        function of binning) for each channel's residuals and overlays all
+        curves on a single plot. Also shows the white-noise expectation curve.
+
+        Parameters
+        ----------
+        binmax : int, optional
+            Maximum number of bins to test. Default is 10.
+        method : {'pipe', 'std', 'rms', 'astropy'}, optional
+            Noise estimator to use (passed to :func:`utils.fake_allan_deviation`).
+            Default is ``'pipe'`` (MAD-based).
+        timeunit : {'d', 'hr', 'min'} or None, optional
+            Time unit for the secondary x-axis. If ``None``, chosen automatically
+            based on data span. Default is ``None``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The created figure.
+        axs : matplotlib.axes.Axes
+            The plot axes (with primary x-axis for bin size and secondary
+            x-axis for time period).
+        """
+        # Creating a figure outside of the loop
+        fig, axs = plt.subplots()
+        
+        ## Looping over all channels
+        for c in tqdm(range( self.spectral_lcs_dict['lc'].shape[1] )):
+            times = np.loadtxt( self.pout + '/CH' + str(c) + '/lc.dat', usecols=0, unpack=True )
+            resids = np.loadtxt( self.pout + '/CH' + str(c) + '/model_resids.dat', usecols=1, unpack=True )
+            _, _, binsize, noise, white_noise_expec = utils.fake_allan_deviation(times=times, residuals=resids, binmax=binmax, method=method, timeunit=timeunit, plot=False)
+
+            ## And plotting it over the main plot
+            ## First plotting the computed noise
+            if c == 0:
+                label1, label2 = 'Computed noise', 'White-noise expectation'
+            else:
+                label1, label2 = None, None
+            axs.plot(binsize, noise, color='dodgerblue', lw=0.7, label=label1, zorder=10)
+            ## Now plotting the white-noise expectation
+            axs.plot(binsize, white_noise_expec, color='orangered', lw=1., label=label2, zorder=20)
+
+        # Converting binsize to time units
+        time_binsize = binsize * np.nanmedian( np.diff(times) )
+
+        # First, let's estimate the time units we need from times array:
+        if timeunit is None:
+            if np.ptp(time_binsize) >= 1.:
+                ## If times duration is greater than 2 hours, we use days
+                time_unit_multiplication_factor = 1.     # Units are already in days
+                time_unit_label = 'Time period [d]'
+            elif ( np.ptp(time_binsize) > 5/24 ) and ( np.ptp(time_binsize) < 1. ):
+                ## If times duration is greater than 2 hours, but less than 2 days, we use hours
+                time_unit_multiplication_factor = 24.    # Converting days to hours
+                time_unit_label = 'Time period [hr]'
+            else:
+                ## If times duration is less than 2 hours, we use minutes
+                time_unit_multiplication_factor = 24 * 60
+                time_unit_label = 'Time period [min]'
+        else:
+            if timeunit == 'd':
+                time_unit_multiplication_factor = 1.
+                time_unit_label = 'Time period [d]'
+            elif timeunit == 'hr':
+                time_unit_multiplication_factor = 24.
+                time_unit_label = 'Time period [hr]'
+            elif timeunit == 'min':
+                time_unit_multiplication_factor = 24 * 60
+                time_unit_label = 'Time period [min]'
+            else:
+                raise ValueError("timeunit should be one of 'd', 'hr', or 'min'.")
+
+        # The following two functions will convert binsize to time (in minutes) and vice versa
+        def bin2time(binsize):
+            return binsize * np.nanmedian(np.diff(times)) * time_unit_multiplication_factor
+
+        def time2bin(bintime):
+            return bintime / ( np.nanmedian(np.diff(times)) * time_unit_multiplication_factor )
+
+        ## Adding secondary x-axis for time
+        secax = axs.secondary_xaxis('top', functions=(bin2time, time2bin))
+        secax.set_xlabel(time_unit_label, labelpad=10)
+
+        axs.set_xlim([ np.min(binsize), np.max(binsize) ])
+
+        axs.set_xscale('log')
+        axs.set_yscale('log')
+
+        axs.set_xlabel('Bin size [Number of points]')
+        axs.set_ylabel('Noise estimate [ppm]')
+
+        axs.legend()
+
+        return fig, axs
