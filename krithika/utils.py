@@ -220,7 +220,10 @@ def fake_allan_deviation(times, residuals, binmax=10, method='pipe', timeunit=No
 
     # Computing binning for each binsize, and then computing the stddev of the binned residuals
     for i in range(len(binsize)):
-        _, binned_flux, _, _ = lcbin(time=times, flux=residuals, nmin=1, binwidth=binsize[i] * np.nanmedian(np.diff(times)) )
+        if binsize[i] != 1:
+            _, binned_flux, _, _ = lcbin(time=times, flux=residuals, nmin=1, binwidth=binsize[i] * np.nanmedian(np.diff(times)) )
+        else:
+            binned_flux= np.copy( residuals )
     
         noise[i] = noise_func(binned_flux)
         nbin[i] = int( np.floor( len(residuals) / binsize[i] ) )
