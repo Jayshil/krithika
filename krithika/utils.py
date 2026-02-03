@@ -1,10 +1,17 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.stats import mad_std
+from scipy.optimize import minimize
+from scipy.integrate import simpson
+from scipy.interpolate import interp1d
 from astropy.timeseries import LombScargle
 import astropy.constants as con
+from tqdm import tqdm
 import astropy.units as u
+from pathlib import Path
+import multiprocessing
 import corner
+import os
 
 def t14(per, ar, rprs, b, ecc=0, omega=90, transit=True):
     """
@@ -539,3 +546,139 @@ def generate_times_with_gaps(times, efficiency):
     tim, roll = tim[idx_timsort], roll[idx_timsort]
 
     return tim, roll
+
+def planck_func(lam, temp):
+    """
+    Given the wavelength and temperature
+    this function will compute the specific
+    intensity using the Planck's law
+    """
+    
+    coeff1 = 2 * con.h * con.c * con.c / lam**5
+    expo = np.exp( con.h * con.c / lam / con.k_B / temp ) - 1
+    planck = (coeff1/expo).to(u.W / u.m**2 / u.micron)
+    
+    return planck
+
+class BrightnessTemperatureCalculator:
+    """Compute brightness temperature(s) from eclipse depths and a bandpass.
+
+    Parameters
+    ----------
+    fp : float or array-like
+        Eclipse depths (planet/star flux ratio). If array-like, temperature distribution
+        will be computed (multiprocessing is used in this case).
+    rprs : float or array-like
+        Planet-to-star radius ratio (Rp/R*). If scalar and fp is array-like,
+        the same rprs is applied to all elements.
+    bandpass : dict
+        Bandpass dict with keys 'WAVE' (astropy Quantity) and 'RESPONSE' (array).
+    nthreads : int, optional
+        Number of worker processes for multiprocessing. Default is cpu count.
+    method : str, optional
+        Minimizer method passed to scipy.optimize.minimize. Default 'Nelder-Mead'.
+    teff_star : float or None
+        Stellar effective temperature in K (used if stellar_spec not provided).
+    stellar_spec : dict or None
+        Stellar spectrum dict with keys 'WAVE' and 'FLUX' (astropy Quantities).
+    pout : str, optional
+        Output directory used to cache results. Default current working dir.
+
+    Methods
+    -------
+    compute()
+        Run the calculation and return temperature(s) in Kelvin (float or 1D ndarray).
+    """
+
+    def __init__(self, fp, rprs, bandpass, nthreads=multiprocessing.cpu_count(),
+                 method='Nelder-Mead', teff_star=None, stellar_spec=None, pout=os.getcwd()):
+        self.fp = fp
+        self.rprs = rprs
+        self.bandpass = bandpass
+        self.nthreads = nthreads
+        self.method = method
+        self.teff_star = teff_star
+        self.stellar_spec = stellar_spec
+        self.pout = pout
+
+        # prepare stellar spectrum
+        if (self.stellar_spec is not None) and (self.teff_star is None):
+            self.wav_star = self.stellar_spec['WAVE'].to(u.micron)
+            self.fl_star = self.stellar_spec['FLUX'].to(u.J / u.s / u.m**2 / u.micron)
+        elif (self.teff_star is not None) and (self.stellar_spec is None):
+            self.wav_star = self.bandpass['WAVE'].to(u.micron)
+            self.fl_star = planck_func(self.wav_star, self.teff_star)
+        else:
+            raise ValueError('Provide either stellar_spec or teff_star.')
+
+        # bandpass
+        self.wav_instrument = self.bandpass['WAVE'].to(u.micron)
+        self.response_instrument = self.bandpass['RESPONSE']
+
+        # build transmission evaluated on stellar wavelengths
+        spln2 = interp1d(x=self.wav_instrument.value, y=self.response_instrument,
+                         bounds_error=False, fill_value=0.0)
+        trans_fun = spln2(self.wav_star.value)
+        # guard against division by zero if response all zeros
+        if np.max(trans_fun) > 0:
+            trans_fun = trans_fun / np.max(trans_fun)
+        self.trans_fun = trans_fun
+
+    def _solve_single(self, ecl_dep, rprs_ratio):
+        """Compute brightness temperature for a single eclipse depth."""
+        # scaled fp for integration comparison
+        if ecl_dep > 0:
+            fp_pl = ecl_dep * simpson(y=self.fl_star.value * self.trans_fun, x=self.wav_star.value) / (rprs_ratio**2)
+
+            def func_to_minimize_new(x):
+                planet_bb = planck_func(self.wav_star, x * u.K)
+                planet_den = simpson(y=planet_bb.value * self.trans_fun, x=self.wav_star.value)
+                chi2 = (fp_pl - planet_den)**2
+                return chi2
+
+            soln = minimize(fun=func_to_minimize_new, x0=1000.0, method=self.method)
+            temp_pl = float(np.atleast_1d(soln.x)[0])
+        else:
+            temp_pl = 0.
+        # return scalar Kelvin
+        return temp_pl
+
+    def compute(self):
+        """Compute and return brightness temperature(s) in Kelvin.
+
+        Returns
+        -------
+        temp_pl : float or ndarray
+            Brightness temperature (K) for scalar input or 1D ndarray for array input.
+        """
+        fp = self.fp
+        rprs = self.rprs
+
+        # scalar path
+        if isinstance(fp, (float, np.floating)) or (np.asarray(fp).size == 1):
+            return self._solve_single(float(fp), float(rprs) if np.isscalar(rprs) else float(np.asarray(rprs).item()))
+
+        # array path
+        fp_arr = np.asarray(fp, dtype=float)
+        if np.isscalar(rprs):
+            rprs_arr = np.full(fp_arr.shape, float(rprs))
+        else:
+            rprs_arr = np.asarray(rprs, dtype=float)
+
+        cache_path = Path(self.pout) / 'Brightness_temp.npy'
+        if cache_path.exists():
+            print('>>> --- Loading...')
+            temp_pl = np.load(str(cache_path))
+            return temp_pl
+
+        # prepare inputs for multiprocessing
+        inputs = [(float(fp_arr[i]), float(rprs_arr[i])) for i in range(len(fp_arr))]
+
+        # use Pool with bound method; user's environment set_start_method('fork') so this is fine
+        with multiprocessing.Pool(self.nthreads) as p:
+            result_list = p.starmap(self._solve_single, tqdm(inputs, total=len(fp)), chunksize=max(1, self.nthreads))
+        temp_pl = np.array(result_list, dtype=float)
+
+        # save cache
+        np.save(str(cache_path), temp_pl)
+        return temp_pl
