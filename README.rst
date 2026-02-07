@@ -1,5 +1,70 @@
-A toolkit for Exoplanets!
----------------------------------------------
+# krithika
+----------
+
+
+A comprehensive Python toolkit for exoplanet time-series data analysis, encompassing photometry, spectroscopy, and multi-wavelength observations from space telescopes.
+
+## Overview
+-----------
+`krithika` provides end-to-end analysis capabilities for exoplanet transit and eclipse observations, with particular focus on data from CHEOPS, JWST, TESS, and Kepler missions. The package integrates photometric extraction, light-curve fitting, spectroscopic analysis, and interactive visualization tools.
+
+## Features
+
+### Core Capabilities
+**Multi-mission Support:** Support for CHEOPS, JWST, TESS, and Kepler data formats
+
+- **Photometry:**
+
+    - Aperture photometry with customizable apertures and sky regions
+    - Sub-array image handling for detailed pixel-level analysis
+    - Background and contamination correction
+
+- **Spectroscopy:**
+
+    - Multi-wavelength light-curve analysis
+    - Parallel fitting across spectroscopic channels
+    - Parameter spectra extraction (transit depth vs wavelength)
+
+- **Visualization:**
+
+    - Interactive ND image viewer (2D/3D/4D support)
+    - Draggable cut-profile tools for pixel analysis
+    - 2D spectro-temporal heatmaps
+    - Publication-quality parameter spectra plots
+
+- **Noise Analysis:**
+
+    - Allan deviation and white-noise floor estimation
+    - Robust noise metrics across binning scales
+    - Multi-wavelength noise comparison
+
+
+## Installation
+---------------
+Requirements
+    - Python 3.8+
+    - numpy, scipy, matplotlib
+    - astropy, astroquery
+    - scikit-learn
+    - photutils (optional, for advanced aperture photometry)
+    - juliet
+    - corner
+    - dace_query (optional, for CHEOPS data download)
+
+### Quick install
+
+Latest stable version:
+
+```pip install krithika```
+
+Developement version from Github:
+
+```
+git clone https://github.com/Jayshil/krithika.git
+cd krithika
+pip install -e .
+```
+
 
 License
 -------
