@@ -1,12 +1,12 @@
 krithika
-----------
+--------
 
 
 A comprehensive Python toolkit for exoplanet time-series data analysis, encompassing photometry, spectroscopy, and multi-wavelength observations from space telescopes.
 
 Overview
----------
----------
+--------
+--------
 `krithika` provides end-to-end analysis capabilities for exoplanet transit and eclipse observations, with particular focus on data from CHEOPS, JWST, TESS, and Kepler missions. The package integrates photometric extraction, light-curve fitting, spectroscopic analysis, and interactive visualization tools.
 
 ## Features
