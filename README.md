@@ -14,26 +14,22 @@ A comprehensive Python toolkit for exoplanet time-series data analysis, encompas
 **Multi-mission Support:** Support for CHEOPS, JWST, TESS, and Kepler data formats
 
 - **Photometry:**
-
     - Aperture photometry with customizable apertures and sky regions
     - Sub-array image handling for detailed pixel-level analysis
     - Background and contamination correction
 
 - **Spectroscopy:**
-
     - Multi-wavelength light-curve analysis
     - Parallel fitting across spectroscopic channels
     - Parameter spectra extraction (transit depth vs wavelength)
 
 - **Visualization:**
-
     - Interactive ND image viewer (2D/3D/4D support)
     - Draggable cut-profile tools for pixel analysis
     - 2D spectro-temporal heatmaps
     - Publication-quality parameter spectra plots
 
 - **Noise Analysis:**
-
     - Allan deviation and white-noise floor estimation
     - Robust noise metrics across binning scales
     - Multi-wavelength noise comparison
@@ -42,7 +38,6 @@ A comprehensive Python toolkit for exoplanet time-series data analysis, encompas
 ## Installation
 
 Requirements
-
     - Python 3.8+
     - numpy, scipy, matplotlib
     - astropy, astroquery
