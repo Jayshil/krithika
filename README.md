@@ -1,106 +1,185 @@
-# krithika
+# Krithika
 
+A Python toolkit for exoplanet time‑series analysis across CHEOPS, JWST, TESS, and Kepler/K2, including photometry, spectroscopic light‑curve fitting, and visualization.
 
-A comprehensive Python toolkit for exoplanet time-series data analysis, encompassing photometry, spectroscopy, and multi-wavelength observations from space telescopes.
+## Highlights
 
-## Overview
+- **CHEOPS** data access (DRP light curves, subarrays) and photometry
+- **Spectroscopic light‑curve analysis** with channel binning and parallel fitting
+- **Interactive ND image viewer** for 2D/3D/4D datasets
+- **Noise analysis** (Allan‑deviation style) and power spectra
+- **PLD/PCA** utilities for systematics analysis
+- **Brightness temperature** estimation from eclipse depths
 
-`krithika` provides end-to-end analysis capabilities for exoplanet transit and eclipse observations, with particular focus on data from CHEOPS, JWST, TESS, and Kepler missions. The package integrates photometric extraction, light-curve fitting, spectroscopic analysis, and interactive visualization tools.
-
-## Features
-
-### Core Capabilities
-
-**Multi-mission Support:** Support for CHEOPS, JWST, TESS, and Kepler data formats
-
-- **Photometry:**
-    - Aperture photometry with customizable apertures and sky regions
-    - Sub-array image handling for detailed pixel-level analysis
-    - Background and contamination correction
-
-- **Spectroscopy:**
-    - Multi-wavelength light-curve analysis
-    - Parallel fitting across spectroscopic channels
-    - Parameter spectra extraction (transit depth vs wavelength)
-
-- **Visualization:**
-    - Interactive ND image viewer (2D/3D/4D support)
-    - Draggable cut-profile tools for pixel analysis
-    - 2D spectro-temporal heatmaps
-    - Publication-quality parameter spectra plots
-
-- **Noise Analysis:**
-    - Allan deviation and white-noise floor estimation
-    - Robust noise metrics across binning scales
-    - Multi-wavelength noise comparison
-
+---
 
 ## Installation
 
-Requirements
-    - Python 3.8+
-    - numpy, scipy, matplotlib
-    - astropy, astroquery
-    - scikit-learn
-    - photutils (optional, for advanced aperture photometry)
-    - juliet
-    - corner
-    - dace_query (optional, for CHEOPS data download)
-
-### Quick install
-
-Latest stable version:
-
-```
-pip install krithika
-```
-
-Developement version from Github:
-
-```
+### From source
+```bash
 git clone https://github.com/Jayshil/krithika.git
 cd krithika
 pip install -e .
 ```
 
+### Dependencies (core)
+- `numpy`, `scipy`, `matplotlib`
+- `astropy`, `astroquery`
+- `tqdm`, `corner`
 
-License
--------
+### Optional dependencies
+- `photutils` (aperture photometry)
+- `juliet` (Bayesian fitting)
+- `dace_query` (CHEOPS archive access)
 
-This project is Copyright (c) Jayshil A. Patel and licensed under
-the terms of the GNU GPL v3+ license. This package is based upon
-the `Openastronomy packaging guide <https://github.com/OpenAstronomy/packaging-guide>`_
-which is licensed under the BSD 3-clause licence. See the licenses folder for
-more information.
+---
 
-Contributing
-------------
+## Quick Start
 
-We love contributions! krithika is open source,
-built on open source, and we'd love to have you hang out in our community.
+### ApPhoto (Aperture Photometry)
+```python
+from krithika import CHEOPSData
 
-**Imposter syndrome disclaimer**: We want your help. No, really.
+# Load subarray data and run aperture photometry
+cheops = CHEOPSData(object_name="WASP-189b")
+cheops.get_subarrays(pout="./cheops_data")
 
-There may be a little voice inside your head that is telling you that you're not
-ready to be an open source contributor; that your skills aren't nearly good
-enough to contribute. What could you possibly offer a project like this one?
+phot = cheops.ApPhoto(visit_nos=1, aprad=20, sky_rad1=30, sky_rad2=50)
+flux, flux_err, _ = phot.simple_aperture_photometry()
+```
 
-We assure you - the little voice in your head is wrong. If you can write code at
-all, you can contribute code to open source. Contributing to open source
-projects is a fantastic way to advance one's coding skills. Writing perfect code
-isn't the measure of a good developer (that would disqualify all of us!); it's
-trying to create something, making mistakes, and learning from those
-mistakes. That's how we all improve, and we are happy to help others learn.
+### CHEOPS: DRP light curves and subarrays
+```python
+from krithika import CHEOPSData
 
-Being an open source contributor doesn't just mean writing code, either. You can
-help out by writing documentation, tests, or even giving feedback about the
-project (and yes - that includes giving feedback about the contribution
-process). Some of these contributions may be the most valuable to the project as
-a whole, because you're coming to the project with fresh eyes, so you can see
-the errors and assumptions that seasoned contributors have glossed over.
+cheops = CHEOPSData(object_name="WASP-189b")
+drp = cheops.get_drp_lightcurves(pout="./cheops_data")
 
-Note: This disclaimer was originally written by
-`Adrienne Lowe <https://github.com/adriennefriend>`_ for a
-`PyCon talk <https://www.youtube.com/watch?v=6Uj746j9Heo>`_, and was adapted by
-krithika based on its use in the README file for the
-`MetPy project <https://github.com/Unidata/MetPy>`_.
+cheops.get_subarrays(pout="./cheops_data")
+phot = cheops.ApPhoto(visit_nos=1, aprad=20, sky_rad1=30, sky_rad2=50)
+flux, flux_err, _ = phot.simple_aperture_photometry()
+```
+
+### Spectroscopic light‑curve analysis
+```python
+from krithika import SpectroscopicLC
+import numpy as np
+
+times = np.load("times.npy")
+lc = np.load("spec_lc.npy")
+lc_errs = np.load("spec_lc_err.npy")
+wavelengths = np.load("wavelengths.npy")
+
+def get_priors(ch_name):
+    return "/path/to/priors.dat"
+
+spec = SpectroscopicLC(
+    times=times,
+    lc=lc,
+    lc_errs=lc_errs,
+    wavelengths=wavelengths,
+    priors=get_priors,
+    pout="./results"
+)
+
+spec.analyse_lc_parallel(nthreads=4, ch_nos=10)
+fig, ax = spec.plot_parameter_spectrum("p_p1", bins=10, plot_white=True)
+```
+
+### ND Image Viewer
+```python
+from krithika import NDImageViewer
+import numpy as np
+
+data = np.random.rand(50, 128, 128)
+viewer = NDImageViewer(data=data, cmap="magma")
+viewer.show()
+```
+
+---
+
+## Modules & Classes
+
+### `CHEOPSData`
+- `pipe_data()` — read PIPE FITS light curves
+- `get_drp_lightcurves()` — download DRP light curves
+- `get_subarrays()` — download subarray cubes
+- `ApPhoto()` — aperture photometry wrapper
+
+### `SpectroscopicLC`
+- `generating_lightcurves()` — channel binning
+- `analyse_lc_parallel()` — parallel fitting
+- `plot_parameter_spectrum()` — spectral parameter plot
+- `plot2Ddata()` / `plot2D_data_model_resids()` — 2D maps
+- `joint_fake_allan_deviation()` — combined noise plots
+
+### `NDImageViewer`
+Interactive 2D/3D/4D viewer with:
+- scale modes (Linear/Log/Asinh/Zscale)
+- sliders for frames/groups
+- draggable cut profiles and live plots
+
+### `ApPhoto`
+Aperture photometry on time‑series cubes:
+- circular or brightest‑pixel apertures
+- sky annulus handling
+- PLD/PCA tools
+
+### `TESSData`, `KeplerData`
+MAST queries for light curves and target pixel files.
+
+---
+
+## Utilities (`utils.py`)
+
+- Light‑curve binning (`lcbin`)
+- Allan deviation proxy (`fake_allan_deviation`)
+- Lomb–Scargle PSD (`make_psd`)
+- PCA (`classic_PCA`)
+- Orbital geometry utilities (`t14`, `b_to_inc`, `inc_to_b`)
+- Brightness temperature calculation (`BrightnessTemperatureCalculator`)
+
+---
+
+## Output Structure (typical)
+
+```
+results/
+├── spectroscopic_lc_ch_10.pkl
+├── CH0/
+│   ├── _dynesty_DNS_posteriors.pkl
+│   ├── model_resids.dat
+│   └── posteriors.dat
+├── CH1/
+│   └── ...
+└── Brightness_temp.npy
+```
+
+---
+
+## Notes
+
+- Many functions cache outputs; delete cached files to recompute.
+- For CHEOPS downloads, `dace_query` must be installed and configured.
+- For fitting, `juliet` must be installed.
+
+---
+
+## License
+
+MIT (if not otherwise specified).
+
+---
+
+## Citation
+
+If you use this package in a publication, please cite the repository:
+
+```
+@software{krithika,
+  author = {Jayshil},
+  title = {Krithika: Exoplanet Time-Series Analysis Toolkit},
+  year = {2026},
+  url = {https://github.com/Jayshil/krithika}
+}
+```
