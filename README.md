@@ -103,7 +103,7 @@ tim, fl, fle, _ = data.get_lightcurves(self, pdc=True)
 
 ### To download the target-pixel files
 data.get_tpfs()
-phot = data.ApPhoto(sector='NAME', brightpix=True, nos_brightest=12, nos_faintest=50)
+phot = data.ApPhoto(sector=sector, brightpix=True, nos_brightest=12, nos_faintest=50)
 flux, flux_err, _, _, _ = phot.simple_aperture_photometry(method='photutils', bkg_corr='median', robust_err=True, plot=False)
 ```
 
