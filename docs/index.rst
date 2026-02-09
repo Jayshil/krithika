@@ -1,7 +1,7 @@
 :code:`krithika`
 ----------------------
 
-.. image:: krithika_logo_highres.png
+.. image:: ../krithika_logo_highres.png
    :align: center
    :width: 700
 
