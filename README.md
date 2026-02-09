@@ -193,56 +193,99 @@ data.plot_corner(planet_only=False, save=True)
 ## Modules & Classes
 
 ### `ApPhoto`
-Aperture photometry on time‑series cubes:
-- circular or brightest‑pixel apertures
-- sky annulus handling
-- PLD/PCA tools
+Aperture photometry on time‑series cubes.
 
-### `TESSData`, `KeplerData`
-MAST queries for light curves and target pixel files.
+- `find_center()` — estimate centroids  
+- `simple_aperture_photometry()` — generate simple aperture photometry
+- `pixel_level_decorrelation()` — perform pixel-level decorrelation (PLD) 
+- `pld_correction()` — PLD‑based light‑curve correction  
+
+---
 
 ### `CHEOPSData`
-- `pipe_data()` — read PIPE FITS light curves
-- `get_drp_lightcurves()` — download DRP light curves
-- `get_subarrays()` — download subarray cubes
-- `ApPhoto()` — aperture photometry wrapper
+Tools for CHEOPS light‑curve and subarray data handling.
+
+- `pipe_data()` — read PIPE light curves and extract time‑series arrays  
+- `get_drp_lightcurves()` — download/load DRP light curves from DACE  
+- `get_subarrays()` — download/load CHEOPS subarray cubes  
+- `ApPhoto()` — convenience wrapper to run aperture photometry on subarrays  
+
+---
+
+### `julietPlots`
+Plotting utilities for `juliet` results.
+
+- `full_model_lc()` — plot full light‑curve model with data  
+- `phase_folded_lc()` — plot phase‑folded light curves  
+- `plot_gp()` — visualize GP components  
+- `plot_fake_allan_deviation()` — Allan‑deviation proxy plots  
+- `plot_corner()` — posterior corner plots  
+
+---
+
+### `TESSData`
+MAST query interface for TESS.
+
+- `get_lightcurves()` — download SAP/PDC light curves  
+- `get_tpfs()` — download target‑pixel files  
+- `ApPhoto()` — aperture photometry on TPFs  
+
+---
+
+### `KeplerData`
+MAST query interface for Kepler/K2.
+
+- `get_lightcurves()` — download SAP/PDC light curves  
+- `get_tpfs()` — download target‑pixel files  
+- `ApPhoto()` — aperture photometry on TPFs  
+
+---
 
 ### `SpectroscopicLC`
-- `generating_lightcurves()` — channel binning
-- `analyse_lc_parallel()` — parallel fitting
-- `plot_parameter_spectrum()` — spectral parameter plot
-- `plot2Ddata()` / `plot2D_data_model_resids()` — 2D maps
-- `joint_fake_allan_deviation()` — combined noise plots
+Spectroscopic light‑curve analysis and fitting.
+ 
+- `generating_lightcurves()` — bin spectra into channels   
+- `white_light_lc()` — compute white‑light curve
+- `analyse_lc_parallel()` — end‑to‑end light curve analysis using multi-processing
+- `plot_parameter_spectrum()` — plot parameter vs wavelength  
+- `plot2Ddata()` — 2D time‑wavelength map  
+- `plot2D_data_model_resids()` — 2D data/model/residual maps  
+- `joint_fake_allan_deviation()` — combined noise vs binning  
+
+---
 
 ### `NDImageViewer`
-Interactive 2D/3D/4D viewer with:
-- scale modes (Linear/Log/Asinh/Zscale)
-- sliders for frames/groups
-- draggable cut profiles and live plots
+Interactive viewer for 2D/3D/4D image cubes.
+
+- `show()` — display the viewer  
+
+---
+
+### `BrightnessTemperatureCalculator`
+Compute brightness temperature from eclipse depths.
+
+- `compute()` — run calculation and return temperature(s) using multi-processing, if an array for `fp` is provided.
 
 ---
 
 ## Utilities (`utils.py`)
 
-- Light‑curve binning (`lcbin`)
-- Allan deviation proxy (`fake_allan_deviation`)
-- Lomb–Scargle PSD (`make_psd`)
-- PCA (`classic_PCA`)
-- Orbital geometry utilities (`t14`, `b_to_inc`, `inc_to_b`)
-- Brightness temperature calculation (`BrightnessTemperatureCalculator`)
+Core functions used across modules:
 
----
+- `t14()` — compute transit duration  
+- `b_to_inc()` — impact parameter → inclination  
+- `inc_to_b()` — inclination → impact parameter  
+- `rho_to_ar()` — stellar density → a/R★  
+- `pipe_mad()` — MAD‑based scatter estimator  
+- `lcbin()` — bin light curves with gap handling  
+- `rms()` — root‑mean‑square statistic  
+- `fake_allan_deviation()` — noise vs bin size  
+- `corner_plot()` — convenience wrapper for corner plots  
+- `make_psd()` — Lomb–Scargle power spectral density  
+- `standarize_data()` — standardization helper
+- `generate_times_with_gaps()` — simulate time series with gaps  
+- `planck_func()` — Planck function for blackbody spectra
 
-## Notes
-
-- Many functions cache outputs; delete cached files to recompute.
-- For CHEOPS downloads, `dace_query` must be installed and configured.
-
----
-
-## License
-
-MIT (if not otherwise specified).
 
 ---
 
