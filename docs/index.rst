@@ -1,14 +1,14 @@
 :code:`krithika`
-----------------------
+================
 
-.. image:: krithika_logo_highres.png
+.. image:: ../krithika_logo_highres.png
    :align: center
    :width: 700
 
 A Python toolkit for exoplanet time‑series analysis across CHEOPS, JWST, TESS, and Kepler/K2, including photometry, spectroscopic light‑curve fitting, and visualization.
 
 Highlights
-----------
+==========
 
 - Aperture photometry for any dataset
 - **CHEOPS** data access (DRP light curves, subarrays) and photometry
@@ -20,10 +20,10 @@ Highlights
 - **Brightness temperature** estimation from eclipse depths
 
 Installation
-------------
+============
 
 From source
-===========
+-----------
 
 .. code-block:: bash
 
@@ -32,7 +32,7 @@ From source
    pip install -e .
 
 From pip
-========
+--------
 
 .. code-block:: bash
 
@@ -47,16 +47,16 @@ Dependencies (core)
 - ``tqdm``, ``corner``
 
 Optional dependencies
-=====================
+---------------------
 
 - ``photutils`` (aperture photometry)
 - ``dace_query`` (CHEOPS archive access)
 
 Quick Start
------------
+===========
 
 ApPhoto (Aperture Photometry)
-=============================
+-----------------------------
 
 .. code-block:: python
 
@@ -84,10 +84,10 @@ ApPhoto (Aperture Photometry)
    _, _, PCA = phot.pixel_level_decorrelation()
    fl_aper, fl_pred, _, _ = phot.pld_correction()
 
-Please look at the API for more functionalities and for description of the class. The ``ApPhoto`` class is wrapped around several other classes, ``CHEOPSData``, ``TESSData``, and ``KeplerData``, that allows the users to download CHEOPS, TESS, and Kepler data directly from command lines and use ``ApPhoto`` class to perform aperture photometry on these datasets.
+Please refer to the :ref:`API` section for detailed documentation of all the modules and classes in this package. The ``ApPhoto`` class is wrapped around several other classes, ``CHEOPSData``, ``TESSData``, and ``KeplerData``, that allows the users to download CHEOPS, TESS, and Kepler data directly from command lines and use ``ApPhoto`` class to perform aperture photometry on these datasets.
 
 CHEOPS: DRP light curves and subarrays
-======================================
+--------------------------------------
 
 .. code-block:: python
 
@@ -106,7 +106,7 @@ CHEOPS: DRP light curves and subarrays
 Similarly we can download and work with TESS and Kepler/K2 datasets as follows:
 
 TESS and Kepler/K2 datasets
-===========================
+---------------------------
 
 .. code-block:: python
 
@@ -130,7 +130,7 @@ TESS and Kepler/K2 datasets
 It is also possible to analyse spectroscopic light curves using ``juliet``. Using ``SpectroscopicLC`` class, we can fit light curves parallelly. Finally, we can use some of the functions in the class to plot results.
 
 Spectroscopic light‑curve analysis
-==================================
+----------------------------------
 
 .. code-block:: python
 
@@ -171,7 +171,7 @@ Spectroscopic light‑curve analysis
    plt.show()
 
 ND Image Viewer
-===============
+---------------
 
 .. code-block:: python
 
@@ -183,7 +183,7 @@ ND Image Viewer
    viewer.show()
 
 Plots for ``juliet``-fitting
-============================
+----------------------------
 
 Finally, using ``julietPlots`` class, we can plot light curve models, phase folded light curves, gp models, corner plots, and allan deviation proxy plots for ``juliet``-fitted models.
 
@@ -215,12 +215,12 @@ Finally, using ``julietPlots`` class, we can plot light curve models, phase fold
    data.plot_corner(planet_only=False, save=True)
 
 Modules & Classes
------------------
+=================
 
 Please refer to the :ref:`API` section for detailed documentation of all the modules and classes in this package.
 
 Citation
---------
+========
 
 If you use this package in a publication, please cite the repository:
 
