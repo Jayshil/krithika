@@ -162,6 +162,7 @@ Spectroscopic light‑curve analysis
    plot2Ddata(self, cmap='plasma')
    plt.show()
 
+   ## Parallel fitting of the spectroscopic light curves
    spec.analyse_lc_parallel(nthreads=4, ch_nos=10)
    fig, ax = spec.plot_parameter_spectrum("p_p1", bins=10, plot_white=True)
    plt.show()
