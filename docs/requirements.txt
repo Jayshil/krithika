@@ -1,5 +1,10 @@
 numpy
+matplotlib
 astropy
+astroquery
+pathlib
+juliet
+corner
 scipy
 tqdm
 scikit-image
