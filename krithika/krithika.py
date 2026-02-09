@@ -1021,9 +1021,9 @@ class julietPlots(object):
             inc = self.all_mods_ins[instruments[0]]['params'].inc
             b = inc_to_b(inc=inc, ar=ar, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
                                omega=self.all_mods_ins[instruments[0]]['params'].w)
-        t14 = t14(per=per, ar=ar, rprs=rprs, b=b, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
+        t14_dur = t14(per=per, ar=ar, rprs=rprs, b=b, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
                         omega=self.all_mods_ins[instruments[0]]['params'].w)
-        t14_phs = t14 / per
+        t14_phs = t14_dur / per
 
         # -------------------------------------------
         #     Computing detrended data and model
