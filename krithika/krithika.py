@@ -13,10 +13,10 @@ import multiprocessing
 from pathlib import Path
 from glob import glob
 from tqdm import tqdm
-import .plotstyles
+from .plotstyles import *
 import pickle
 import juliet
-import utils
+from .utils import *
 import warnings
 import os
 
@@ -1006,7 +1006,7 @@ class julietPlots(object):
         ### a/R*
         if 'rho' in self.res.model_parameters:
             ### This would mean that we have fitted for rho. We can convert rho to a/*
-            ar = utils.rho_to_ar(np.nanmedian(self.res.posteriors['posterior_samples']['rho']), per)
+            ar = rho_to_ar(np.nanmedian(self.res.posteriors['posterior_samples']['rho']), per)
         else:
             ### That means that we directly fit for a/R*
             try:
@@ -1019,9 +1019,9 @@ class julietPlots(object):
             b = np.nanmedian(self.res.posteriors['posterior_samples']['b_p1'])
         except:
             inc = self.all_mods_ins[instruments[0]]['params'].inc
-            b = utils.inc_to_b(inc=inc, ar=ar, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
+            b = inc_to_b(inc=inc, ar=ar, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
                                omega=self.all_mods_ins[instruments[0]]['params'].w)
-        t14 = utils.t14(per=per, ar=ar, rprs=rprs, b=b, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
+        t14 = t14(per=per, ar=ar, rprs=rprs, b=b, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
                         omega=self.all_mods_ins[instruments[0]]['params'].w)
         t14_phs = t14 / per
 
@@ -1239,19 +1239,19 @@ class julietPlots(object):
                 else:
                     binwid = np.ptp( phs[idx_transits] ) / nos_bin_tra
 
-                    bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = utils.lcbin(time=phs[idx_transits], flux=detrend_data[idx_transits]*ppt, binwidth=binwid)
+                    bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = lcbin(time=phs[idx_transits], flux=detrend_data[idx_transits]*ppt, binwidth=binwid)
                     if phasecurve or eclipse:
-                        _, bin_res_tra, bin_reserr_tra, _ = utils.lcbin(time=phs[idx_transits], flux=residuals[idx_transits]*ppt*1e6, binwidth=binwid)
+                        _, bin_res_tra, bin_reserr_tra, _ = lcbin(time=phs[idx_transits], flux=residuals[idx_transits]*ppt*1e6, binwidth=binwid)
                     else:
                         # When transit only, we haven't multiplied the errorbars with 1e6 yet; so we need to do it again
-                        _, bin_res_tra, bin_reserr_tra, _ = utils.lcbin(time=phs[idx_transits], flux=residuals[idx_transits]*1e6, binwidth=binwid)
+                        _, bin_res_tra, bin_reserr_tra, _ = lcbin(time=phs[idx_transits], flux=residuals[idx_transits]*1e6, binwidth=binwid)
 
                 # Plotting them
                 ax1.errorbar(bin_phs_tra, bin_fl_tra, yerr=bin_fle_tra, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
                 ax2.errorbar(bin_phs_tra, bin_res_tra, yerr=bin_reserr_tra, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
 
                 # Setting y-lim on residuals based on binned residuals
-                ax2.set_ylim(np.nanmedian(bin_res_tra)-5*utils.pipe_mad(bin_res_tra), np.nanmedian(bin_res_tra)+5*utils.pipe_mad(bin_res_tra))
+                ax2.set_ylim(np.nanmedian(bin_res_tra)-5*pipe_mad(bin_res_tra), np.nanmedian(bin_res_tra)+5*pipe_mad(bin_res_tra))
 
             # -------------------------------------------
             #         If phase curve modelling,
@@ -1299,14 +1299,14 @@ class julietPlots(object):
                         bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=phs, y=detrend_data, n_bin=int( len(phs)/nos_bin_pc ), yerr=detrend_errs)
                         _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=phs, y=residuals*1e6, n_bin=int( len(phs)/nos_bin_pc ), yerr=detrend_errs)
                     else:
-                        bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=phs, flux=detrend_data, binwidth=1/nos_bin_pc)
-                        _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=phs, flux=residuals*1e6, binwidth=1/nos_bin_pc)
+                        bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = lcbin(time=phs, flux=detrend_data, binwidth=1/nos_bin_pc)
+                        _, bin_res_pc, bin_reserr_pc, _ = lcbin(time=phs, flux=residuals*1e6, binwidth=1/nos_bin_pc)
 
                     # Plotting them
                     ax3.errorbar(bin_phs_pc, bin_fl_pc, yerr=bin_fle_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
                     ax4.errorbar(bin_phs_pc, bin_res_pc, yerr=bin_reserr_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
 
-                    ax4.set_ylim(np.nanmedian(bin_res_pc)-5*utils.pipe_mad(bin_res_pc), np.nanmedian(bin_res_pc)+5*utils.pipe_mad(bin_res_pc))
+                    ax4.set_ylim(np.nanmedian(bin_res_pc)-5*pipe_mad(bin_res_pc), np.nanmedian(bin_res_pc)+5*pipe_mad(bin_res_pc))
 
             if not one_plot:
                 # ---------------------------------------------------
@@ -1398,19 +1398,19 @@ class julietPlots(object):
                 binwid = np.ptp( bin_phs[idx_transits] ) / nos_bin_tra
 
                 # Performing binning
-                bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = utils.lcbin(time=bin_phs[idx_transits], flux=bin_fl[idx_transits]*ppt, binwidth=binwid)
+                bin_phs_tra, bin_fl_tra, bin_fle_tra, _ = lcbin(time=bin_phs[idx_transits], flux=bin_fl[idx_transits]*ppt, binwidth=binwid)
                 if phasecurve or eclipse:
-                    _, bin_res_tra, bin_reserr_tra, _ = utils.lcbin(time=bin_phs[idx_transits], flux=bin_res[idx_transits]*ppt*1e6, binwidth=binwid)
+                    _, bin_res_tra, bin_reserr_tra, _ = lcbin(time=bin_phs[idx_transits], flux=bin_res[idx_transits]*ppt*1e6, binwidth=binwid)
                 else:
                     # When transit only, we haven't multiplied the errorbars with 1e6 yet; so we need to do it again
-                    _, bin_res_tra, bin_reserr_tra, _ = utils.lcbin(time=bin_phs[idx_transits], flux=bin_res[idx_transits]*1e6, binwidth=binwid)
+                    _, bin_res_tra, bin_reserr_tra, _ = lcbin(time=bin_phs[idx_transits], flux=bin_res[idx_transits]*1e6, binwidth=binwid)
 
             # Plotting them
             ax1.errorbar(bin_phs_tra, bin_fl_tra, yerr=bin_fle_tra, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
             ax2.errorbar(bin_phs_tra, bin_res_tra, yerr=bin_reserr_tra, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
 
             # Setting y-lim on residuals based on binned residuals
-            ax2.set_ylim(np.nanmedian(bin_res_tra)-5*utils.pipe_mad(bin_res_tra), np.nanmedian(bin_res_tra)+5*utils.pipe_mad(bin_res_tra))
+            ax2.set_ylim(np.nanmedian(bin_res_tra)-5*pipe_mad(bin_res_tra), np.nanmedian(bin_res_tra)+5*pipe_mad(bin_res_tra))
             
             # -------------------------------------------
             #        Binned data: For PHASE CURVE
@@ -1420,14 +1420,14 @@ class julietPlots(object):
                     bin_phs_pc, bin_fl_pc, bin_fle_pc = juliet.utils.bin_data(x=bin_phs, y=bin_fl, n_bin=int( len(bin_phs)/nos_bin_pc ), yerr=bin_fle)
                     _, bin_res_pc, bin_reserr_pc = juliet.utils.bin_data(x=bin_phs, y=bin_res*1e6, n_bin=int( len(bin_phs)/nos_bin_pc ), yerr=bin_fle)
                 else:
-                    bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = utils.lcbin(time=bin_phs, flux=bin_fl, binwidth=1/nos_bin_pc)
-                    _, bin_res_pc, bin_reserr_pc, _ = utils.lcbin(time=bin_phs, flux=bin_res*1e6, binwidth=1/nos_bin_pc)
+                    bin_phs_pc, bin_fl_pc, bin_fle_pc, _ = lcbin(time=bin_phs, flux=bin_fl, binwidth=1/nos_bin_pc)
+                    _, bin_res_pc, bin_reserr_pc, _ = lcbin(time=bin_phs, flux=bin_res*1e6, binwidth=1/nos_bin_pc)
 
                 # Plotting them
                 ax3.errorbar(bin_phs_pc, bin_fl_pc, yerr=bin_fle_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
                 ax4.errorbar(bin_phs_pc, bin_res_pc, yerr=bin_reserr_pc, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
 
-                ax4.set_ylim(np.nanmedian(bin_res_pc)-5*utils.pipe_mad(bin_res_pc), np.nanmedian(bin_res_pc)+5*utils.pipe_mad(bin_res_pc))
+                ax4.set_ylim(np.nanmedian(bin_res_pc)-5*pipe_mad(bin_res_pc), np.nanmedian(bin_res_pc)+5*pipe_mad(bin_res_pc))
 
             
             # -----------------------------------------------------------------------
@@ -1575,7 +1575,7 @@ class julietPlots(object):
             residuals = fl_ins - full_model
 
             # And, now, let's plot the Allan deviation
-            fig, ax, binsize, noise, white_noise = utils.fake_allan_deviation(times=tim_ins, residuals=residuals, binmax=binmax, method=method, timeunit=timeunit, plot=True)
+            fig, ax, binsize, noise, white_noise = fake_allan_deviation(times=tim_ins, residuals=residuals, binmax=binmax, method=method, timeunit=timeunit, plot=True)
 
             figs_all.append(fig)
             axs_all.append(ax)
@@ -1711,7 +1711,7 @@ class julietPlots(object):
         rcParams['ytick.labelsize'] = 'medium'
         rcParams['axes.titlesize'] = 'large'
 
-        fig = utils.corner_plot(samples=posteriors, labels=labels, titles=titles)
+        fig = corner_plot(samples=posteriors, labels=labels, titles=titles)
         if save:
             plt.savefig(self.input_folder + '/corner_plot.png', dpi=250)
 
@@ -1877,7 +1877,7 @@ class julietPlots(object):
 
                 else:
                     binwid = np.ptp( self.dataset.GP_lc_arguments[instruments[i]][:,0] ) / nos_bin
-                    bin_tim, bin_fl, bin_fle, _ = utils.lcbin(time=self.dataset.GP_lc_arguments[instruments[i]][:,0], flux=self.gp_data[instruments[i]]*1e6, binwidth=binwid)
+                    bin_tim, bin_fl, bin_fle, _ = lcbin(time=self.dataset.GP_lc_arguments[instruments[i]][:,0], flux=self.gp_data[instruments[i]]*1e6, binwidth=binwid)
                 axs.errorbar(bin_tim, bin_fl, yerr=bin_fle, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
                     
                 # And now models
@@ -1893,7 +1893,7 @@ class julietPlots(object):
                 axs.set_ylabel('Relative flux [ppm]')
 
                 axs.set_xlim([ np.min(self.dataset.GP_lc_arguments[instruments[i]][:,0]), np.max(self.dataset.GP_lc_arguments[instruments[i]][:,0]) ])
-                axs.set_ylim([ np.nanmedian(bin_fl)-5*utils.pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*utils.pipe_mad(bin_fl) ])
+                axs.set_ylim([ np.nanmedian(bin_fl)-5*pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*pipe_mad(bin_fl) ])
 
                 # Saving fig, axs to the list
                 fig_all.append(fig)
@@ -1923,7 +1923,7 @@ class julietPlots(object):
 
             else:
                 binwid = np.ptp( bin_gp_reg ) / nos_bin / len(instruments)
-                bin_tim, bin_fl, bin_fle, _ = utils.lcbin(time=bin_gp_reg, flux=bin_resids, binwidth=binwid)
+                bin_tim, bin_fl, bin_fle, _ = lcbin(time=bin_gp_reg, flux=bin_resids, binwidth=binwid)
             axs.errorbar(bin_tim, bin_fl, yerr=bin_fle, fmt='o', c='navy', elinewidth=2, capthick=2, capsize=3, mfc='white', zorder=100)
 
             if highres:
@@ -1954,7 +1954,7 @@ class julietPlots(object):
             axs.set_ylabel('Relative flux [ppm]')
 
             axs.set_xlim([ np.min(bin_gp_reg), np.max(bin_gp_reg) ])
-            axs.set_ylim([ np.nanmedian(bin_fl)-5*utils.pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*utils.pipe_mad(bin_fl) ])
+            axs.set_ylim([ np.nanmedian(bin_fl)-5*pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*pipe_mad(bin_fl) ])
 
         if one_plot:
             return fig, axs
@@ -2715,11 +2715,11 @@ class ApPhoto(object):
 
         # Choosing the method to compute noise
         if noise == 'pipe':
-            noise_func = utils.pipe_mad
+            noise_func = pipe_mad
         elif noise == 'std':
             noise_func = np.nanstd
         elif noise == 'rms':
-            noise_func = utils.rms
+            noise_func = rms
         elif noise == 'astropy':
             noise_func = lambda x: mad_std(x, ignore_nan=True)
         else:
@@ -2820,7 +2820,7 @@ class ApPhoto(object):
         else:
             self.idx_nan = np.ones(self.Phat.shape[0], dtype=bool)
 
-        self.V, self.eigenvalues, self.PCA = utils.classic_PCA(self.Phat.T)
+        self.V, self.eigenvalues, self.PCA = classic_PCA(self.Phat.T)
 
         return self.V, self.eigenvalues, self.PCA
     
@@ -2949,8 +2949,8 @@ class ApPhoto(object):
         coeffs = result[0]
         prediction = np.dot(coeffs, X)
 
-        print('>>> --- MAD of uncorrected light curve is: {:.2f} ppm'.format(utils.pipe_mad(self.Psum/np.median(self.Psum))*1e6))
-        print('>>> --- MAD of PLD corrected light curve is: {:.2f} ppm'.format(utils.pipe_mad(self.Psum/prediction)*1e6))
+        print('>>> --- MAD of uncorrected light curve is: {:.2f} ppm'.format(pipe_mad(self.Psum/np.median(self.Psum))*1e6))
+        print('>>> --- MAD of PLD corrected light curve is: {:.2f} ppm'.format(pipe_mad(self.Psum/prediction)*1e6))
 
         if plot:
             fig, axs = plt.subplots(2, 1, figsize=(15/1.5,10/1.5), sharex=True, sharey=True)
@@ -3000,11 +3000,11 @@ class ApPhoto(object):
         """
         # Choosing the method to compute noise
         if noise == 'pipe':
-            noise_func = utils.pipe_mad
+            noise_func = pipe_mad
         elif noise == 'std':
             noise_func = np.nanstd
         elif noise == 'rms':
-            noise_func = utils.rms
+            noise_func = rms
         elif noise == 'astropy':
             noise_func = lambda x: mad_std(x, ignore_nan=True)
         else:
@@ -4197,9 +4197,9 @@ class SpectroscopicLC(object):
             resid = resid * 1e6
 
             if binwidth is not None:
-                _, fl, _, _ =  utils.lcbin(time=tim, flux=fl, binwidth=binwidth)
-                _, model, _, _ = utils.lcbin(time=tim, flux=model, binwidth=binwidth)
-                _, resid, _, _ = utils.lcbin(time=tim, flux=resid, binwidth=binwidth)
+                _, fl, _, _ = lcbin(time=tim, flux=fl, binwidth=binwidth)
+                _, model, _, _ = lcbin(time=tim, flux=model, binwidth=binwidth)
+                _, resid, _, _ = lcbin(time=tim, flux=resid, binwidth=binwidth)
 
             # And putting them in a big array
             data[c, :], models[c, :], resids[c, :] = fl, model, resid
@@ -4298,7 +4298,7 @@ class SpectroscopicLC(object):
         for c in tqdm(range( self.spectral_lcs_dict['lc'].shape[1] )):
             times = np.loadtxt( self.pout + '/CH' + str(c) + '/lc.dat', usecols=0, unpack=True )
             resids = np.loadtxt( self.pout + '/CH' + str(c) + '/model_resids.dat', usecols=1, unpack=True )
-            _, _, binsize, noise, white_noise_expec = utils.fake_allan_deviation(times=times, residuals=resids, binmax=binmax, method=method, timeunit=timeunit, plot=False)
+            _, _, binsize, noise, white_noise_expec = fake_allan_deviation(times=times, residuals=resids, binmax=binmax, method=method, timeunit=timeunit, plot=False)
 
             ## And plotting it over the main plot
             ## First plotting the computed noise
