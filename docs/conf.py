@@ -63,12 +63,12 @@ intersphinx_mapping = {"python": ("https://docs.python.org/", None)}
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-html_theme = "alabaster"
+html_theme = "sphinx_rtd_theme"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-# html_static_path = ["_static"]
+html_static_path = ["_static"]
 
 # By default, when rendering docstrings for classes, sphinx.ext.autodoc will
 # make docs with the class-level docstring and the class-method docstrings,
@@ -77,6 +77,6 @@ html_theme = "alabaster"
 # will append the __init__ docstring to the class-level docstring when rendering
 # the docs. For more options, see:
 # https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#confval-autoclass_content
-autoclass_content = "both"
+#autoclass_content = "both"
 
 # -- Other options ----------------------------------------------------------
