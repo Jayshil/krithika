@@ -9,9 +9,9 @@ import datetime
 # -- Project information -----------------------------------------------------
 
 # The full version, including alpha/beta/rc tags
-#from krithika import __version__
+from krithika import __version__
 
-release = "0.1.0"
+release = __version__
 
 project = "krithika"
 author = "Jayshil A. Patel"
