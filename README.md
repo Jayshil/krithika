@@ -1,5 +1,9 @@
 # Krithika
 
+<p align="center">
+  <img src="krithika_logo_highres.png" alt="Krithika logo" width="260">
+</p>
+
 A Python toolkit for exoplanet time‑series analysis across CHEOPS, JWST, TESS, and Kepler/K2, including photometry, spectroscopic light‑curve fitting, and visualization.
 
 ## Highlights
