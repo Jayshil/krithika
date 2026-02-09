@@ -8,7 +8,7 @@ corner
 scipy
 tqdm
 scikit-image
-sphinx==5.0.2
+sphinx
 sphinx-automodapi
 sphinx-astropy
 sphinx-rtd-theme
