@@ -4,5 +4,5 @@ from .version import version as __version__
 __all__ = ['krithika', 'ndimageviewer', 'utils']
 
 from .krithika import *
-from .ndimageviewer import *
+from .ndimageviewer import NDImageViewer
 from .utils import *
