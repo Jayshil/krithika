@@ -8,7 +8,7 @@
 A Python toolkit for exoplanet time‑series analysis across CHEOPS, JWST, TESS, and Kepler/K2, including photometry, spectroscopic light‑curve fitting, and visualization.
 
 Highlights
-==========
+----------
 
 - Aperture photometry for any dataset
 - **CHEOPS** data access (DRP light curves, subarrays) and photometry
@@ -20,10 +20,10 @@ Highlights
 - **Brightness temperature** estimation from eclipse depths
 
 Installation
-============
+------------
 
 From source
------------
+===========
 
 .. code-block:: bash
 
@@ -32,7 +32,7 @@ From source
    pip install -e .
 
 From pip
---------
+========
 
 .. code-block:: bash
 
@@ -47,16 +47,16 @@ Dependencies (core)
 - ``tqdm``, ``corner``
 
 Optional dependencies
----------------------
+=====================
 
 - ``photutils`` (aperture photometry)
 - ``dace_query`` (CHEOPS archive access)
 
 Quick Start
-===========
+-----------
 
 ApPhoto (Aperture Photometry)
------------------------------
+=============================
 
 .. code-block:: python
 
@@ -87,7 +87,7 @@ ApPhoto (Aperture Photometry)
 Please look at the API for more functionalities and for description of the class. The ``ApPhoto`` class is wrapped around several other classes, ``CHEOPSData``, ``TESSData``, and ``KeplerData``, that allows the users to download CHEOPS, TESS, and Kepler data directly from command lines and use ``ApPhoto`` class to perform aperture photometry on these datasets.
 
 CHEOPS: DRP light curves and subarrays
---------------------------------------
+======================================
 
 .. code-block:: python
 
@@ -106,7 +106,7 @@ CHEOPS: DRP light curves and subarrays
 Similarly we can download and work with TESS and Kepler/K2 datasets as follows:
 
 TESS and Kepler/K2 datasets
----------------------------
+===========================
 
 .. code-block:: python
 
@@ -130,7 +130,7 @@ TESS and Kepler/K2 datasets
 It is also possible to analyse spectroscopic light curves using ``juliet``. Using ``SpectroscopicLC`` class, we can fit light curves parallelly. Finally, we can use some of the functions in the class to plot results.
 
 Spectroscopic light‑curve analysis
-----------------------------------
+==================================
 
 .. code-block:: python
 
@@ -171,7 +171,7 @@ Spectroscopic light‑curve analysis
    plt.show()
 
 ND Image Viewer
----------------
+===============
 
 .. code-block:: python
 
@@ -183,7 +183,7 @@ ND Image Viewer
    viewer.show()
 
 Plots for ``juliet``-fitting
-----------------------------
+============================
 
 Finally, using ``julietPlots`` class, we can plot light curve models, phase folded light curves, gp models, corner plots, and allan deviation proxy plots for ``juliet``-fitted models.
 
@@ -215,105 +215,12 @@ Finally, using ``julietPlots`` class, we can plot light curve models, phase fold
    data.plot_corner(planet_only=False, save=True)
 
 Modules & Classes
-=================
-
-``ApPhoto``
------------
-
-Aperture photometry on time‑series cubes.
-
-- ``find_center()`` — estimate centroids
-- ``simple_aperture_photometry()`` — generate simple aperture photometry
-- ``pixel_level_decorrelation()`` — perform pixel-level decorrelation (PLD)
-- ``pld_correction()`` — PLD‑based light‑curve correction
-
-``CHEOPSData``
---------------
-
-Tools for CHEOPS light‑curve and subarray data handling.
-
-- ``pipe_data()`` — read PIPE light curves and extract time‑series arrays
-- ``get_drp_lightcurves()`` — download/load DRP light curves from DACE
-- ``get_subarrays()`` — download/load CHEOPS subarray cubes
-- ``ApPhoto()`` — convenience wrapper to run aperture photometry on subarrays
-
-``julietPlots``
----------------
-
-Plotting utilities for ``juliet`` results.
-
-- ``full_model_lc()`` — plot full light‑curve model with data
-- ``phase_folded_lc()`` — plot phase‑folded light curves
-- ``plot_gp()`` — visualize GP components
-- ``plot_fake_allan_deviation()`` — Allan‑deviation proxy plots
-- ``plot_corner()`` — posterior corner plots
-
-``TESSData``
-------------
-
-MAST query interface for TESS.
-
-- ``get_lightcurves()`` — download SAP/PDC light curves
-- ``get_tpfs()`` — download target‑pixel files
-- ``ApPhoto()`` — aperture photometry on TPFs
-
-``KeplerData``
---------------
-
-MAST query interface for Kepler/K2.
-
-- ``get_lightcurves()`` — download SAP/PDC light curves
-- ``get_tpfs()`` — download target‑pixel files
-- ``ApPhoto()`` — aperture photometry on TPFs
-
-``SpectroscopicLC``
--------------------
-
-Spectroscopic light‑curve analysis and fitting.
-
-- ``generating_lightcurves()`` — bin spectra into channels
-- ``white_light_lc()`` — compute white‑light curve
-- ``analyse_lc_parallel()`` — end‑to‑end light curve analysis using multi-processing
-- ``plot_parameter_spectrum()`` — plot parameter vs wavelength
-- ``plot2Ddata()`` — 2D time‑wavelength map
-- ``plot2D_data_model_resids()`` — 2D data/model/residual maps
-- ``joint_fake_allan_deviation()`` — combined noise vs binning
-
-``NDImageViewer``
 -----------------
 
-Interactive viewer for 2D/3D/4D image cubes.
-
-- ``show()`` — display the viewer
-
-``BrightnessTemperatureCalculator``
------------------------------------
-
-Compute brightness temperature from eclipse depths.
-
-- ``compute()`` — run calculation and return temperature(s) using multi-processing, if an array for ``fp`` is provided.
-
-Utilities (``utils.py``)
-========================
-
-Core functions used across modules:
-
-- ``t14()`` — compute transit duration
-- ``b_to_inc()`` — impact parameter → inclination
-- ``inc_to_b()`` — inclination → impact parameter
-- ``rho_to_ar()`` — stellar density → a/R★
-- ``pipe_mad()`` — MAD‑based scatter estimator
-- ``lcbin()`` — bin light curves with gap handling
-- ``rms()`` — root‑mean‑square statistic
-- ``fake_allan_deviation()`` — noise vs bin size
-- ``corner_plot()`` — convenience wrapper for corner plots
-- ``make_psd()`` — Lomb–Scargle power spectral density
-- ``standarize_data()`` — standardization helper
-- ``generate_times_with_gaps()`` — simulate time series with gaps
-- ``planck_func()`` — Planck function for blackbody spectra
+Please refer to the :ref:`API` section for detailed documentation of all the modules and classes in this package.
 
 Citation
-========
+--------
 
 If you use this package in a publication, please cite the repository:
 
