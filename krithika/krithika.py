@@ -13,7 +13,7 @@ import multiprocessing
 from pathlib import Path
 from glob import glob
 from tqdm import tqdm
-import plotstyles
+import .plotstyles
 import pickle
 import juliet
 import utils
