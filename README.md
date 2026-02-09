@@ -1,4 +1,4 @@
-# Krithika
+# krithika
 
 <p align="center">
   <img src="krithika_logo_highres.png" alt="Krithika logo" width="700">
@@ -8,7 +8,9 @@ A Python toolkit for exoplanet time‑series analysis across CHEOPS, JWST, TESS,
 
 ## Highlights
 
+- Aperture photometry for any dataset
 - **CHEOPS** data access (DRP light curves, subarrays) and photometry
+- **TESS** and **Kepler/K2** data access and photometry
 - **Spectroscopic light‑curve analysis** with channel binning and parallel fitting
 - **Interactive ND image viewer** for 2D/3D/4D datasets
 - **Noise analysis** (Allan‑deviation style) and power spectra
