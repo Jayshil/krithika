@@ -3110,8 +3110,9 @@ class TESSData(object):
         except:
             self.out_dict_lc, self.tim_lc, self.fl_lc, self.fle_lc = juliet.utils.get_all_TESS_data(object_name=self.object_name, get_PDC=pdc, **kwargs)
         if save:
+            name = 'PDC' if pdc else 'SAP'
             for ins in self.tim_lc.keys():
-                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '.dat', 'w' )
+                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '_' + name + '.dat', 'w' )
                 for t in range( len(self.tim_lc[ins]) ):
                     fname.write( str( self.tim_lc[ins][t] ) + '\t' + str( self.fl_lc[ins][t] ) + '\t' + str( self.fle_lc[ins][t] ) + '\n' )
                 fname.close()
@@ -3386,8 +3387,9 @@ class KeplerData(object):
                 print(self.object_name + '\t\t' + disp_kic[i] + '\t\t' + disp_sec[i])
 
         if save:
+            name = 'PDC' if pdc else 'SAP'
             for ins in self.tim_lc.keys():
-                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '.dat', 'w' )
+                fname = open( pout + '/LC_' + self.object_name + '_' + ins + '_' + name + '.dat', 'w' )
                 for t in range( len(self.tim_lc[ins]) ):
                     fname.write( str( self.tim_lc[ins][t] ) + '\t' + str( self.fl_lc[ins][t] ) + '\t' + str( self.fle_lc[ins][t] ) + '\n' )
                 fname.close()
