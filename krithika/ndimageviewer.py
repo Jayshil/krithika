@@ -355,12 +355,12 @@ class NDImageViewer:
         for cut in self.cuts:
             if not cut["visible"]:
                 continue
-            prof = self._sample_cut(img, cut["p1"], cut["p2"])
-            self.ax_prof.plot(prof, color=cut["color"], lw=1.8)
+            dist, prof = self._sample_cut(img, cut["p1"], cut["p2"])
+            self.ax_prof.plot(dist, prof, color=cut["color"], lw=1.8)
 
         self.fig.canvas.draw_idle()
 
-    def _sample_cut(self, img, p1, p2, npts=300):
+    def _sample_cut(self, img, p1, p2, npts=None):
         """Sample pixel values along a line segment.
 
         Linearly interpolates between two points and samples the image
@@ -375,18 +375,27 @@ class NDImageViewer:
         p2 : array-like
             Ending point [x, y].
         npts : int, optional
-            Number of sample points. Default is 300.
+            Number of sample points. If None, uses the pixel length of the cut.
 
         Returns
         -------
-        ndarray
+        dist : ndarray
+            Distance along the cut (in pixels).
+        values : ndarray
             Sampled intensity values along the line.
         """
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        if npts is None:
+            npts = int(max(abs(dx), abs(dy))) + 1
+            npts = max(npts, 2)
+
         x = np.linspace(p1[0], p2[0], npts)
         y = np.linspace(p1[1], p2[1], npts)
         xi = np.clip(np.round(x).astype(int), 0, self.nx - 1)
         yi = np.clip(np.round(y).astype(int), 0, self.ny - 1)
-        return img[yi, xi]
+        dist = np.sqrt((x - p1[0]) ** 2 + (y - p1[1]) ** 2)
+        return dist, img[yi, xi]
 
     def _get_distance_to_point(self, p1, p2, threshold=10):
         """Compute distance between two points and check if within threshold.
