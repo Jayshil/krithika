@@ -3218,14 +3218,14 @@ class TESSData(object):
                     if len( nan[0] ) == len( dta['FLUX'][t,:,:].flatten() ):
                         idx[t] = False
 
-                self.tim_tpf[sec_tess] = dta['TIME'][idx]
+                self.tim_tpf[sec_tess] = dta['TIME'][idx] + hdul[1].header['BJDREFI']
                 self.fl_tpf[sec_tess], self.fle_tpf[sec_tess] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
                 self.quality[sec_tess] = dta['QUALITY'][idx]
                 self.badpix[sec_tess] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
 
                 if save:
                     data_sector = {}
-                    data_sector['TIME'] = dta['TIME'][idx]
+                    data_sector['TIME'] = dta['TIME'][idx] + hdul[1].header['BJDREFI']
                     data_sector['FLUX'], data_sector['FLUX_ERR'] = dta['FLUX'][idx,:,:], dta['FLUX_ERR'][idx,:,:]
                     data_sector['QUALITY'] = dta['QUALITY'][idx]
                     data_sector['BADPIX'] = np.ones( dta['FLUX'][idx,:,:].shape, dtype=bool )
