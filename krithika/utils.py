@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from astropy.stats import mad_std
 from scipy.optimize import minimize
 from scipy.integrate import simpson
+from scipy.signal import medfilt
 from scipy.interpolate import interp1d
 from astropy.timeseries import LombScargle
 import astropy.constants as con
@@ -150,6 +151,33 @@ def lcbin(time, flux, binwidth=0.06859, nmin=4, time0=None,
 
     j = (n_bin >= nmin)
     return t_bin[j], f_bin[j], e_bin[j], n_bin[j]
+
+def clip_outliers(flux, clip=5, width=11, verbose=True):
+    """
+    Another function from pycheops. Courtesy of P. Maxted.
+    Remove outliers from the light curve.
+
+    Data more than clip*mad from a smoothed version of the light curve are
+    removed where mad is the mean absolute deviation from the
+    median-smoothed light curve.
+
+    :param clip: tolerance on clipping
+    :param width: width of window for median-smoothing filter
+
+    :returns: time, flux, flux_err
+
+    """
+    # medfilt pads the array to be filtered with zeros, so edge behaviour
+    # is better if we filter flux-1 rather than flux.
+    d = abs(medfilt(flux-1, width)+1-flux)
+    mad = d.mean()
+    ok = d < clip*mad
+
+    if verbose:
+        print('\nRejected {} points more than {:0.1f} x MAD = {:0.0f} '
+                'ppm from the median'.format(sum(~ok),clip,1e6*mad*clip))
+
+    return ok
 
 def rms(x):
     return np.sqrt( np.nanmean( (x - np.nanmean(x))**2 ) )
