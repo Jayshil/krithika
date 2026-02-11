@@ -2270,12 +2270,12 @@ class ApPhoto(object):
                 self.cen_r[i], self.cen_c[i] = cen_r_sub, cen_c_sub
         
         if plot:
-            fig, axs = plt.subplots(ncols=1, nrows=2, figsize=(15/2,10/2), sharex=True)
+            fig, axs = plt.subplots(ncols=1, nrows=2, figsize=(15,7), sharex=True)
 
-            axs[0].plot(self.times - self.times[0], self.cen_r, 'k-')
+            axs[0].plot(self.times - self.times[0], self.cen_r, 'k-', lw=1.)
             axs[0].set_ylabel('Row')
 
-            axs[1].plot(self.times - self.times[0], self.cen_c, 'k-')
+            axs[1].plot(self.times - self.times[0], self.cen_c, 'k-', lw=1.)
             axs[1].set_xlabel('Time (BJD)')
             axs[1].set_ylabel('Column')
 
@@ -3028,8 +3028,8 @@ class ApPhoto(object):
 
         if plot:
             fig, axs = plt.subplots(figsize=(16/1.5, 9/1.5))
-            axs.plot(pcs_to_include, mad_with_pcs, c='black')
-            axs.axvline(n_pc_of_min_scat, color='r')
+            axs.plot(pcs_to_include, mad_with_pcs, c='orangered')
+            axs.axvline(n_pc_of_min_scat, color='dimgrey', ls='--', lw=1.)
             
             axs.set_xlabel('Number of PCs included')
             axs.set_ylabel('Median Absolute Deviation')
