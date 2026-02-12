@@ -4593,30 +4593,39 @@ class InvertCowanAgolPC(object):
 
         return self.temp_map
 
-    def median_temperature_map(self, plot=False):
+    def median_temperature_map(self, plot=False, cmap='plasma'):
         A0 = (self.E - self.C1 - self.C2) / 2
         A1 = 2 * self.C1 / np.pi
         B1 = -2 * self.D1 / np.pi
         A2 = 3 * self.C2 / 2
         B2 = -3 * self.D2 / 2
 
-        # Now, let's calculate the fp/f* map distribution
-        fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
-        for integration in tqdm( range( len(self.E) ) ):
-            J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
-                                      ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
-            for th in range(self.ntheta):
-                fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
+        # Simply load the file if it already exists
+        temp_map_path = Path(self.pout + '/Median_Temperature_map.npy')
+        if temp_map_path.exists():
+            print('>>> --- The temperature map file already exists...')
+            print('        Loading it...')
+            temp_map_median = np.load(temp_map_path)
 
-        # Median fpfs_map
-        fpfs_map_median = np.nanmedian(fpfs_map, axis=0)
-
-        # Computing brightness temperature for the median fpfs map
-        if np.isscalar(self.rprs):
-            rprs_val = self.rprs
         else:
-            rprs_val = np.nanmedian(self.rprs)
-        temp_map_median = self._calculate_2d_temp_map(fpfs_map_median, rprs_val)
+            # Now, let's calculate the fp/f* map distribution
+            fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
+            for integration in tqdm( range( len(self.E) ) ):
+                J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
+                                        ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
+                for th in range(self.ntheta):
+                    fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
+
+            # Median fpfs_map
+            fpfs_map_median = np.nanmedian(fpfs_map, axis=0)
+
+            # Computing brightness temperature for the median fpfs map
+            if np.isscalar(self.rprs):
+                rprs_val = self.rprs
+            else:
+                rprs_val = np.nanmedian(self.rprs)
+            temp_map_median = self._calculate_2d_temp_map(fpfs_map_median, rprs_val)
+            np.save(self.pout + '/Median_Temperature_map.npy', temp_map_median)
 
         if plot:
             theta2d, phi2d = np.meshgrid(self.theta_ang, self.phi_ang)
@@ -4625,8 +4634,10 @@ class InvertCowanAgolPC(object):
             fig = plt.figure()
             ax = fig.add_subplot(111, projection='mollweide')
             cax = ax.pcolormesh(phi2d, theta2d, temp_map_median, cmap=cmap)
-            cax.set_clim([1500,3000])
+            cax.set_clim([ np.nanmedian(temp_map_median) - 5*mad_std(temp_map_median), np.nanmedian(temp_map_median) + 5*mad_std(temp_map_median) ])
             plt.colorbar(cax, label='T [K]')
             plt.tight_layout()
-            #plt.show()
-            plt.savefig(self.pout + '/Med_tmap.png', dpi=500)
+
+            return temp_map_median, fig, ax, cax
+        else:
+            return temp_map_median
