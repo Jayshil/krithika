@@ -8,6 +8,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import mad_std
 from scipy.interpolate import interp1d
+from scipy.optimize import root, fsolve
 import matplotlib
 import multiprocessing
 from pathlib import Path
@@ -4364,3 +4365,268 @@ class SpectroscopicLC(object):
         axs.legend()
 
         return fig, axs
+    
+class InvertCowanAgolPC(object):
+    def __init__(self, E, C1, D1, C2, D2, rprs, bandpass=None, method='Nelder-Mead', teff_star=None, stellar_spec=None,\
+                 nthreads=multiprocessing.cpu_count(), ntheta=49, nphi=100, pout=os.getcwd()):
+        ## Theta is along the latitude, phi is along the longitude
+        # Initializing the class with the parameters of the Cowan & Agol (2008) phase curve model and output folder.
+        self.E = E
+        self.C1, self.D1, self.C2, self.D2 = C1, D1, C2, D2
+        self.rprs = rprs
+        self.bandpass = bandpass
+        self.method = method
+        self.teff_star = teff_star
+        self.stellar_spec = stellar_spec
+        self.nthreads = nthreads
+        self.ntheta, self.nphi = ntheta, nphi
+        self.pout = pout
+
+        # prepare stellar spectrum
+        if (self.stellar_spec is not None) and (self.teff_star is None):
+            self.wav_star = self.stellar_spec['WAVE'].to(u.micron)
+            self.fl_star = self.stellar_spec['FLUX'].to(u.J / u.s / u.m**2 / u.micron)
+        
+        elif (self.teff_star is not None) and (self.stellar_spec is None):
+            self.wav_star = bandpass['WAVE'].to(u.micron)
+            self.fl_star = planck_func(self.wav_star, self.teff_star)
+        
+        else:
+            print('>>> --- It looks like you have not provided either stellar_spec or teff_star.\n        Please provide one of them to prepare the stellar spectrum.\n        Otherwise we will not be able to calculate the brightness temperatures.')
+        
+        # Prepare the bandpass
+        if self.bandpass is not None:
+            self.wav_instrument = self.bandpass['WAVE'].to(u.micron)
+            self.response_instrument = self.bandpass['RESPONSE']
+
+            # build transmission evaluated on stellar wavelengths
+            spln2 = interp1d(x=self.wav_instrument.value, y=self.response_instrument,
+                             bounds_error=False, fill_value=0.0)
+            self.trans_fun = spln2(self.wav_star.value)
+            # guard against division by zero if response all zeros
+            if np.max(self.trans_fun) > 0:
+                self.trans_fun = self.trans_fun / np.max(self.trans_fun)
+        
+        else:
+            print('>>> --- It looks like you have not provided the instrument bandpass.\n        Please provide one if you want to calculate the brightness temperatures.')
+
+        # Latitude and longitude grids for the temperature map
+        self.phi_ang = np.linspace(-np.pi, np.pi, self.nphi)
+        self.theta_ang = np.linspace(-np.pi/2, np.pi/2, self.ntheta)
+    
+    def TdayTnight(self):
+        # This function calculates the brightness temperatures of the dayside
+        fp_day = np.copy( self.E )
+        fp_night = self.E - ( 2 * self.C1 )
+
+        # ---------- Dayside brightness temperature ----------
+
+        # If the file already exists, we don't need to calculate it again
+        fname = self.pout + '/Brightness_temp_day.npy'
+        if os.path.isfile(fname):
+            print('>>>> --- The dayside brightness temperature file already exists...')
+            print('         Loading it...')
+            self.bt_day = np.load(fname)
+        else:
+            # And now we will use the BrightnessTemperatureCalculator class to calculate the brightness temperatures
+            btc_day = BrightnessTemperatureCalculator( fp=fp_day, rprs=self.rprs, bandpass=self.bandpass, nthreads=self.nthreads,\
+                                                       method=self.method, teff_star=self.teff_star, stellar_spec=self.stellar_spec, pout=self.pout )
+            self.bt_day = btc_day.compute()
+            
+            ## Renaming the saved file to make it clear that it is the dayside brightness temperature
+            os.rename( self.pout + '/Brightness_temp.npy', self.pout + '/Brightness_temp_day.npy' )
+
+        # ---------- Nightside brightness temperature ----------
+
+        # If the file already exists, we don't need to calculate it again
+        fname = self.pout + '/Brightness_temp_night.npy'
+        if os.path.isfile(fname):
+            print('>>>> --- The nightside brightness temperature file already exists...')
+            print('         Loading it...')
+            self.bt_night = np.load(fname)
+        else:
+            # And now we will use the BrightnessTemperatureCalculator class to calculate the brightness temperatures
+            btc_night = BrightnessTemperatureCalculator( fp=fp_night, rprs=self.rprs, bandpass=self.bandpass, nthreads=self.nthreads,\
+                                                         method=self.method, teff_star=self.teff_star, stellar_spec=self.stellar_spec, pout=self.pout )
+            self.bt_night = btc_night.compute()
+
+            ## Renaming the saved file to make it clear that it is the nightside brightness temperature
+            os.rename( self.pout + '/Brightness_temp.npy', self.pout + '/Brightness_temp_night.npy' )
+
+        return self.bt_day, self.bt_night
+    
+    def calculate_0D_Ab_eps(self, ar):
+        # This function calculates the 0D albedo and recirculation efficiency from the brightness temperatures
+        T_day, T_night = self.TdayTnight()
+
+        T0 = self.teff_star / np.sqrt(ar)
+
+        Td_by_Tn_4 = ( T_day / T_night ) ** 4
+        Tn_by_T0_4 = ( T_night / T0 ) ** 4
+
+        eps = 8 / ( (3 * Td_by_Tn_4) + 5 )
+        A_B = 1 - ( 0.5 * Tn_by_T0_4 * ( 3*Td_by_Tn_4 + 5 ))
+
+        return A_B, eps
+    
+    def _find_hotspot_off(self, a1, b1, a2, b2, method):
+        # Helper function to calculate the hotspot offset
+        # First writing a function solving which will give the location of the hotspot offset
+        # So, what I did was to compute Fp/F* as a function of phi, and solve for dFp/dphi = 0
+        def dfpdphi(phi, a1, b1, a2, b2):
+            dfphi = ( -a1 * np.sin(phi) ) + (b1 * np.cos(phi) ) + (-2 * a2 * np.sin(2*phi) ) + (2 * b2 * np.cos(2*phi) )
+            return dfphi
+        
+        # Now solving it, based on the method
+        if method == 'root':
+            soln = root(fun=dfpdphi, x0=0., args=(a1, b1, a2, b2))
+            off_loc = np.rad2deg(soln.x[0])
+        elif method == 'fsolve':
+            soln = fsolve(func=dfpdphi, x0=0, args=(a1, b1, a2, b2))
+            off_loc = np.rad2deg(soln[0])
+
+        return off_loc
+    
+    def _find_phase_off(self, c1, d1, c2, d2, method):
+        # Another helper function to calculate the phase offset
+        # First writing a function solving which will give the location of the hotspot offset
+        # So, what I did was to compute Fp/F* as a function of phi, and solve for dFp/dphi = 0
+        def dfpdwt(wt, c1, d1, c2, d2):
+            dfphi = ( -c1 * np.sin(wt) ) + (d1 * np.cos(wt) ) + ( -2 * c2 * np.sin(2*wt) ) + ( 2 * d2 * np.cos(2*wt) )
+            return dfphi
+        
+        # Now solving it, based on the method
+        if method == 'root':
+            soln = root(fun=dfpdwt, x0=0., args=(c1, d1, c2, d2))
+            off_loc_wt = soln.x[0]
+        elif method == 'fsolve':
+            soln = fsolve(func=dfpdwt, x0=0, args=(c1, d1, c2, d2))
+            off_loc_wt = soln[0]
+        
+        phs = ( ( off_loc_wt - np.pi ) / (2 * np.pi) ) % 1
+        off_phs_deg = np.rad2deg( 2 * np.pi * (phs - 0.5) )
+
+        return off_phs_deg
+    
+    def phase_offsets(self, method='root'):
+        ## This function calculates the phase offset: 1) phase offset of the observed phase curve, and
+        ## 2) shift of the maximum of the temperature map from the substellar point (the "hotspot offset")
+        ## Compute the temperature map parameters
+        A0 = (self.E - self.C1 - self.C2) / 2
+        A1 = 2 * self.C1 / np.pi
+        B1 = -2 * self.D1 / np.pi
+        A2 = 3 * self.C2 / 2
+        B2 = -3 * self.D2 / 2
+
+        # ---------- Calculating the hotspot offset and phase offset ---------        
+        hotspot_off = np.zeros( len(self.E) )
+        for i in tqdm(range(len(hotspot_off))):
+            hotspot_off[i] = self._find_hotspot_off( A1[i], B1[i], A2[i], B2[i], method=method )
+
+        phase_off = np.zeros( len(self.E) )
+        for i in tqdm(range(len(phase_off))):
+            phase_off[i] = self._find_phase_off( self.C1[i], self.D1[i], self.C2[i], self.D2[i], method=method )
+
+        return hotspot_off, phase_off
+    
+    def _calculate_2d_temp_map(self, fpfs_2d, rprs_ratio):
+        # This is helper function to calculate the 2D temperature map for a given 2D fp/f* map and rprs ratio
+        ## Temperature map
+        Tmap = np.zeros( (self.nphi, self.ntheta) )
+
+        for i in range(self.ntheta):
+            for j in range(self.nphi):
+                if fpfs_2d[j,i] > 0:
+                    fp_pl = fpfs_2d[j,i] * simpson(y=self.fl_star.value*self.trans_fun, x=self.wav_star.value) / (rprs_ratio**2)
+                    def func_to_minimize_new(x):
+                        planet_bb = planck_func(self.wav_star, x*u.K)
+                        planet_den = simpson(y=planet_bb.value*self.trans_fun, x=self.wav_star.value)
+                        chi2 = (fp_pl - planet_den)**2
+                        return chi2
+                    soln = minimize(fun=func_to_minimize_new, x0=1000., method=self.method)
+                    Tmap[j,i] = soln.x
+                else:
+                    Tmap[j,i] = np.array([0.])
+        
+        return Tmap
+    
+    def temperature_map_distribution(self, nsamples=2000):
+        A0 = (self.E - self.C1 - self.C2) / 2
+        A1 = 2 * self.C1 / np.pi
+        B1 = -2 * self.D1 / np.pi
+        A2 = 3 * self.C2 / 2
+        B2 = -3 * self.D2 / 2
+
+        # Now, let's calculate the fp/f* map distribution
+        fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
+        for integration in tqdm( range( len(self.E) ) ):
+            J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
+                                      ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
+            for th in range(self.ntheta):
+                fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
+
+        # Selecting NSample samples from all samples
+        fpfs_map_pos_samples = fpfs_map[np.random.choice(np.arange(fpfs_map.shape[0]), size=nsamples, replace=False), :, :]
+
+        # Computing brightness temperature for the posterior of eclipse depth
+        temp_map_path = Path(self.pout + '/Temperature_map.npy')
+
+        if temp_map_path.exists():
+            self.temp_map = np.load(self.pout + '/Temperature_map.npy')
+        else:
+            
+            if np.isscalar(self.rprs):
+                rprs_arr = np.full(fpfs_map_pos_samples.shape, float(self.rprs))
+            else:
+                rprs_arr = np.random.choice( self.rprs, size=nsamples, replace=False )
+
+            # prepare inputs for multiprocessing
+            inputs = [(fpfs_map_pos_samples[i,:,:], rprs_arr[i]) for i in range( fpfs_map_pos_samples.shape[0] )]
+
+            # use Pool with bound method; user's environment set_start_method('fork') so this is fine
+            with multiprocessing.Pool(self.nthreads) as p:
+                result_list = p.starmap(self._calculate_2d_temp_map, tqdm(inputs, total=nsamples), chunksize=self.nthreads)
+            self.temp_map = np.array(result_list)
+
+            # Saving the data
+            np.save(self.pout + '/Temperature_map.npy', self.temp_map)
+
+        return self.temp_map
+
+    def median_temperature_map(self, plot=False):
+        A0 = (self.E - self.C1 - self.C2) / 2
+        A1 = 2 * self.C1 / np.pi
+        B1 = -2 * self.D1 / np.pi
+        A2 = 3 * self.C2 / 2
+        B2 = -3 * self.D2 / 2
+
+        # Now, let's calculate the fp/f* map distribution
+        fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
+        for integration in tqdm( range( len(self.E) ) ):
+            J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
+                                      ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
+            for th in range(self.ntheta):
+                fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
+
+        # Median fpfs_map
+        fpfs_map_median = np.nanmedian(fpfs_map, axis=0)
+
+        # Computing brightness temperature for the median fpfs map
+        if np.isscalar(self.rprs):
+            rprs_val = self.rprs
+        else:
+            rprs_val = np.nanmedian(self.rprs)
+        temp_map_median = self._calculate_2d_temp_map(fpfs_map_median, rprs_val)
+
+        if plot:
+            theta2d, phi2d = np.meshgrid(self.theta_ang, self.phi_ang)
+
+            # Plot the temperature map
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='mollweide')
+            cax = ax.pcolormesh(phi2d, theta2d, temp_map_median, cmap=cmap)
+            cax.set_clim([1500,3000])
+            plt.colorbar(cax, label='T [K]')
+            plt.tight_layout()
+            #plt.show()
+            plt.savefig(self.pout + '/Med_tmap.png', dpi=500)
