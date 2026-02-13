@@ -710,3 +710,36 @@ class BrightnessTemperatureCalculator:
         # save cache
         np.save(str(cache_path), temp_pl)
         return temp_pl
+    
+def trapz2d(z, x, y):
+    """
+    Helper function to perform 2D trapezoidal integration.
+    Integrates a regularly spaced 2D grid using the composite trapezium rule.
+
+    Source: https://github.com/tiagopereira/python_tips/blob/master/code/trapz2d.py
+    My sourse: I have copied from `kelp`: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L15C1-L44C48
+
+    Parameters
+    ----------
+    z : `~numpy.ndarray`
+        2D array
+    x : `~numpy.ndarray`
+        grid values for x (1D array)
+    y : `~numpy.ndarray`
+        grid values for y (1D array)
+
+    Returns
+    -------
+    t : `~numpy.ndarray`
+        Trapezoidal approximation to the integral under z
+    """
+    m = z.shape[0] - 1
+    n = z.shape[1] - 1
+    dx = x[1] - x[0]
+    dy = y[1] - y[0]
+
+    s1 = z[0, 0, :] + z[m, 0, :] + z[0, n, :] + z[m, n, :]
+    s2 = (np.sum(z[1:m, 0, :], axis=0) + np.sum(z[1:m, n, :], axis=0) +
+        np.sum(z[0, 1:n, :], axis=0) + np.sum(z[m, 1:n, :], axis=0))
+    s3 = np.sum(np.sum(z[1:m, 1:n, :], axis=0), axis=0)
+    return dx * dy * (s1 + 2 * s2 + 4 * s3) / 4
