@@ -4696,7 +4696,7 @@ class InvertCowanAgolPC(object):
         # This function calculates the 0D albedo and recirculation efficiency from the brightness temperatures
         T_day, T_night = self.TdayTnight()
 
-        T0 = self.teff_star / np.sqrt(ar)
+        T0 = self.teff_star.value / np.sqrt(ar)
 
         Td_by_Tn_4 = ( T_day / T_night ) ** 4
         Tn_by_T0_4 = ( T_night / T0 ) ** 4
