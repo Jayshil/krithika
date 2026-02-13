@@ -17,7 +17,7 @@ from tqdm import tqdm
 #from .plotstyles import *
 import pickle
 import juliet
-from .utils import *
+from utils import *
 import warnings
 import os
 
@@ -4382,6 +4382,13 @@ class InvertCowanAgolPC(object):
         self.ntheta, self.nphi = ntheta, nphi
         self.pout = pout
 
+        ## Calculating the A coefficents of the Cowan & Agol (2008) phase curve model from the input parameters
+        self.A0 = (self.E - self.C1 - self.C2) / 2
+        self.A1 = 2 * self.C1 / np.pi
+        self.B1 = -2 * self.D1 / np.pi
+        self.A2 = 3 * self.C2 / 2
+        self.B2 = -3 * self.D2 / 2
+
         # prepare stellar spectrum
         if (self.stellar_spec is not None) and (self.teff_star is None):
             self.wav_star = self.stellar_spec['WAVE'].to(u.micron)
@@ -4393,6 +4400,9 @@ class InvertCowanAgolPC(object):
         
         else:
             print('>>> --- It looks like you have not provided either stellar_spec or teff_star.\n        Please provide one of them to prepare the stellar spectrum.\n        Otherwise we will not be able to calculate the brightness temperatures.')
+
+        if self.teff_star is None:
+            print('>>> --- It looks like you have not provided the stellar effective temperature.\n        Please provide it if you want to calculate the Bond albedo and heat re-distribution efficiency, as well as the average dayside and nightside temperatures.')
         
         # Prepare the bandpass
         if self.bandpass is not None:
@@ -4511,17 +4521,11 @@ class InvertCowanAgolPC(object):
     def phase_offsets(self, method='root'):
         ## This function calculates the phase offset: 1) phase offset of the observed phase curve, and
         ## 2) shift of the maximum of the temperature map from the substellar point (the "hotspot offset")
-        ## Compute the temperature map parameters
-        A0 = (self.E - self.C1 - self.C2) / 2
-        A1 = 2 * self.C1 / np.pi
-        B1 = -2 * self.D1 / np.pi
-        A2 = 3 * self.C2 / 2
-        B2 = -3 * self.D2 / 2
 
         # ---------- Calculating the hotspot offset and phase offset ---------        
         hotspot_off = np.zeros( len(self.E) )
         for i in tqdm(range(len(hotspot_off))):
-            hotspot_off[i] = self._find_hotspot_off( A1[i], B1[i], A2[i], B2[i], method=method )
+            hotspot_off[i] = self._find_hotspot_off( self.A1[i], self.B1[i], self.A2[i], self.B2[i], method=method )
 
         phase_off = np.zeros( len(self.E) )
         for i in tqdm(range(len(phase_off))):
@@ -4551,17 +4555,13 @@ class InvertCowanAgolPC(object):
         return Tmap
     
     def temperature_map_distribution(self, nsamples=2000):
-        A0 = (self.E - self.C1 - self.C2) / 2
-        A1 = 2 * self.C1 / np.pi
-        B1 = -2 * self.D1 / np.pi
-        A2 = 3 * self.C2 / 2
-        B2 = -3 * self.D2 / 2
+        # This function calculates the distribution of the temperature maps
 
         # Now, let's calculate the fp/f* map distribution
         fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
         for integration in tqdm( range( len(self.E) ) ):
-            J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
-                                      ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
+            J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
+                                           ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
             for th in range(self.ntheta):
                 fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
 
@@ -4594,11 +4594,7 @@ class InvertCowanAgolPC(object):
         return self.temp_map
 
     def median_temperature_map(self, plot=False, cmap='plasma'):
-        A0 = (self.E - self.C1 - self.C2) / 2
-        A1 = 2 * self.C1 / np.pi
-        B1 = -2 * self.D1 / np.pi
-        A2 = 3 * self.C2 / 2
-        B2 = -3 * self.D2 / 2
+        # This function calculates the median temperature map and plots it if plot=True
 
         # Simply load the file if it already exists
         temp_map_path = Path(self.pout + '/Median_Temperature_map.npy')
@@ -4611,8 +4607,8 @@ class InvertCowanAgolPC(object):
             # Now, let's calculate the fp/f* map distribution
             fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
             for integration in tqdm( range( len(self.E) ) ):
-                J_phi = A0[integration] + ( A1[integration] * np.cos(self.phi_ang) ) + ( B1[integration] * np.sin(self.phi_ang) )+\
-                                        ( A2[integration] * np.cos(2*self.phi_ang) ) + ( B2[integration] * np.sin(2*self.phi_ang) )
+                J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
+                                               ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
                 for th in range(self.ntheta):
                     fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
 
@@ -4641,3 +4637,405 @@ class InvertCowanAgolPC(object):
             return temp_map_median, fig, ax, cax
         else:
             return temp_map_median
+        
+    def _compute_temp_along_longitude(self, fpfs, rprs_ratio):
+        ## This is a helper function to compute the temperature along the longitude for a given fp/f* map and rprs ratio
+        # Temperature map
+        Tmap = np.zeros(self.nphi)
+
+        for j in range(self.nphi):
+            if fpfs[j] > 0.:
+                fp_pl = fpfs[j] * simpson(y=self.fl_star.value*self.trans_fun, x=self.wav_star.value) / (rprs_ratio**2)
+                def func_to_minimize_new(x):
+                    planet_bb = planck_func(self.wav_star, x*u.K)
+                    planet_den = simpson(y=planet_bb.value*self.trans_fun, x=self.wav_star.value)
+                    chi2 = (fp_pl - planet_den)**2
+                    return chi2
+                soln = minimize(fun=func_to_minimize_new, x0=1000., method=self.method)
+                Tmap[j] = soln.x
+            else:
+                Tmap[j] = np.array([0.])
+        
+        return Tmap
+    
+    def equatorial_temp_map(self, plot=False, nsamples=2000):
+        # This function calculates the temperature map along the equator (theta=0) and plots it if plot=True
+
+        # Simply load the file if it already exists
+        temp_map_path = Path(self.pout + '/Equatorial_Temperature_map.npy')
+        if temp_map_path.exists():
+            print('>>> --- The equatorial temperature map file already exists...')
+            print('        Loading it...')
+            temp_map_equatorial = np.load(temp_map_path)
+
+        else:
+            # Now, let's calculate the fp/f* map distribution along the equator (theta=0)
+            fpfs_equatorial = np.zeros( (len(self.E), self.nphi) )
+            for integration in tqdm( range( len(self.E) ) ):
+                J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
+                                               ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
+                fpfs_equatorial[integration, :] = np.sin(np.pi/2) * J_phi * 0.75
+
+            # Selecting NSample samples from all samples
+            fpfs_equatorial_pos_samples = fpfs_equatorial[np.random.choice(np.arange(fpfs_equatorial.shape[0]), size=nsamples, replace=False), :]
+
+            # Computing brightness temperature for the median fpfs map along the equator
+            if np.isscalar(self.rprs):
+                rprs_arr = np.full(fpfs_equatorial_pos_samples.shape, float(self.rprs))
+            else:
+                rprs_arr = np.random.choice( self.rprs, size=nsamples, replace=False )
+            
+            # prepare inputs for multiprocessing
+            inputs = [(fpfs_equatorial_pos_samples[i,:], rprs_arr[i]) for i in range( fpfs_equatorial_pos_samples.shape[0] )]
+
+            # use Pool with bound method; user's environment set_start_method('fork') so this is fine
+            with multiprocessing.Pool(self.nthreads) as p:
+                result_list = p.starmap(self._compute_temp_along_longitude, tqdm(inputs, total=nsamples), chunksize=self.nthreads)
+            temp_map_equatorial = np.array(result_list)
+            
+            np.save(self.pout + '/Equatorial_Temperature_map.npy', temp_map_equatorial)
+
+        if plot:
+            fig, axs = plt.subplots()
+            axs.plot(np.rad2deg(self.phi_ang), np.nanmedian(temp_map_equatorial, axis=0), color='navy', lw=2., zorder=100)
+            for i in range(100):
+                axs.plot(np.rad2deg(self.phi_ang), temp_map_equatorial[np.random.randint(0,temp_map_equatorial.shape[0]), :], alpha=0.5, color='orangered', lw=1., zorder=10)
+
+            axs.set_xlim([-180., 180.])
+
+            axs.set_xlabel('Longitude [deg]')
+            axs.set_ylabel('Temperature [K]')
+
+            return temp_map_equatorial, fig, axs
+        else:
+            return temp_map_equatorial
+        
+    def _phase_curve_forward_model(self, I_phi_theta, phi, theta, xi):
+        # Given the 2D flux distribution map, I(phi, theta), we will compute phase curve signal
+        # as a function of xi (which is 0 at occultation and +/- pi at transits)
+
+        # 2D angles
+        theta2d, phi2d = np.meshgrid(theta, phi)
+
+        f_xi = np.zeros(len(xi))
+
+        for i in range(len(xi)):
+            # lower and upper limits on phi integration
+            l1_phi, l2_phi = -xi[i] - np.pi/2, -xi[i] + np.pi/2
+            
+            ## Both l1_phi and l2_phi must be within (-np.pi, np.pi)
+            if l1_phi < -np.pi:
+                l1_phi = l1_phi + (2 * np.pi)
+
+            if l2_phi > np.pi:
+                l2_phi = l2_phi - (2 * np.pi)
+                
+            idx_phi = np.zeros(len(phi), dtype=bool)
+            if l2_phi > l1_phi:
+                idx_phi[ (phi>l1_phi) & (phi<l2_phi) ] = True
+            else:
+                idx_phi[ (phi>l1_phi) | (phi<l2_phi) ] = True
+
+            # And the integration
+            f_xi[i] = trapz2d( I_phi_theta[idx_phi,:,None] * np.cos(phi2d[idx_phi,:,None] + xi[i]) * np.sin(theta2d[idx_phi,:,None]) * np.sin(theta2d[idx_phi,:,None]), phi[idx_phi], theta)[0]
+
+        return f_xi
+    
+    def forward_phase_curve_model(self, plot=False):
+        # Computing the Fp/F* (i.e., I(phi, theta) ) map
+        I_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
+        for integration in tqdm( range( len(self.E) ) ):
+            fpfs_ph = self.A0[integration] + (self.A1[integration] * np.cos(self.phi_ang)) + (self.B1[integration] * np.sin(self.phi_ang))+\
+                                             (self.A2[integration] * np.cos(2*self.phi_ang)) + (self.B2[integration] * np.sin(2*self.phi_ang))
+            for th in range(self.ntheta):
+                I_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * fpfs_ph * 0.75
+
+        # Fitted phase curve model
+        xi = 2 * np.pi * (np.linspace(0., 1., 1000) - 0.5)
+        FpFs_fitted = np.nanmedian(self.E) + ( np.nanmedian(self.C1) * (np.cos( xi ) - 1.) ) + ( np.nanmedian(self.D1) * np.sin( xi ) ) +\
+                                             ( np.nanmedian(self.C2) * (np.cos( 2*xi) - 1.) ) + ( np.nanmedian(self.D2) * np.sin( 2*xi ) )
+
+        FpFs_forward_model = self._phase_curve_forward_model(I_phi_theta=np.nanmedian(I_map, axis=0), phi=self.phi_ang, theta=self.theta_ang + np.pi/2, xi=xi)
+
+        if plot:
+            fig, axs = plt.subplots()
+            axs.plot(xi, FpFs_forward_model, color='navy', lw=1.5, label='Forward model', zorder=100)
+            axs.plot(xi, FpFs_fitted, color='orangered', lw=1.5, label='Fitted model', zorder=100)
+            axs.set_xlabel(r'$\xi$ [rad]')
+            axs.set_ylabel(r'$F_p/F_*$')
+            axs.legend()
+
+            return FpFs_forward_model, fig, axs
+        else:
+            return FpFs_forward_model
+        
+    def _albedo_eps_tdaynight(self, temp_map, a_by_Rst):
+        """
+        This function takes temperature map and theta (latitude) and phi (longitude)
+        angles to compute the Bond albedo and heat re-distribution efficiency.
+
+        Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
+        """
+
+        # First creating meshgrid of theta and phi
+        theta2d, phi2d = np.meshgrid(self.theta_ang + np.pi/2, self.phi_ang)
+
+        # ---------------------------
+        #  To compute Bond albedo
+        # ---------------------------
+
+        # Now computing the planetary flux from temperature map
+        # Kelp added an addition condition here: to integrate only over positive values of phi
+        # I think that is because kelp has phi run from -2*pi to 2*pi, i.e., they have "two dayside" and "two nightside"
+        # To compensate for this, they only integrate over positive values of phi
+        # However, I chose phi from -pi to pi -- so, we don't need this extra condition
+        fl_pl_total = trapz2d( temp_map[...,None]**4 * np.sin(theta2d[...,None]), self.phi_ang, self.theta_ang + np.pi/2 )[0]
+
+        # Computing the flux from star
+        fl_star = np.pi * (self.teff_star ** 4)
+
+        # Computing the Bond albedo
+        A_Bond = 1 - ( (a_by_Rst**2) * fl_pl_total / fl_star)
+
+        # -----------------------------------
+        #  To compute epsilon (kelp method)
+        # -----------------------------------
+        #
+        # kelp computes epsilon by taking ratio of nightside flux to the dayside flux
+
+        mask_day = np.abs(phi2d) < np.pi/2
+        mask_night = np.abs(phi2d) > np.pi/2
+
+        fl_day = np.sum( (temp_map * mask_day)**4 ) / np.sum(mask_day)
+        fl_night = np.sum( (temp_map * mask_night)**4 ) / np.sum(mask_night)
+
+        eps_kelp = fl_night / fl_day
+
+        # -----------------------------------------
+        #  To compute T_day, T_night and epsilon
+        #     (Keating, Cowan & Dang 2019)
+        # -----------------------------------------
+
+        # This method is slightly different -- they compute heat redistribution 
+        # efficiency as ratio of heat irradiated by nightside vs heat irradiated 
+        # by the whole planet
+        #
+        # Further, they compute dayside and nightside temperature by integrating temperatures 
+        # on the dayside and nightside, respectively.
+
+        # Indices for the dayside and the nightside
+        idx_day = np.abs(self.phi_ang) < np.pi/2
+        idx_night = np.abs(self.phi_ang) > np.pi/2
+
+        #Tday = ( (0.5 / np.pi) * trapz2d( temp_map[...,None]**4 * np.sin(theta2d[...,None] ) * (np.abs(phi2d[...,None]) < np.pi/2 ), phi, theta )[0] ) ** 0.25
+        #Tnight = ( (0.5 / np.pi) * trapz2d( temp_map[...,None]**4 * np.sin(theta2d[...,None] ) * (np.abs(phi2d[...,None]) > np.pi/2 ), phi, theta )[0] ) ** 0.25
+
+        Tday = ( (0.5 / np.pi) * trapz2d( temp_map[idx_day, :, None]**4 * np.sin(theta2d[idx_day, :, None] ), self.phi_ang[idx_day], self.theta_ang + np.pi/2 )[0] ) ** 0.25
+        Tnight = ( (0.5 / np.pi) * trapz2d( temp_map[idx_night, :, None]**4 * np.sin(theta2d[idx_night, :, None] ), self.phi_ang[idx_night], self.theta_ang + np.pi/2 )[0] ) ** 0.25
+
+        #fl_pl_night = trapz2d( temp_map[...,None]**4 * np.sin(theta2d[...,None] ) * (np.abs(phi2d[...,None]) > np.pi/2 ), phi, theta )[0]
+        fl_pl_night = trapz2d( temp_map[idx_night, :, None]**4 * np.sin(theta2d[idx_night, :, None] ), self.phi_ang[idx_night], self.theta_ang + np.pi/2 )[0]
+        eps_keating =  fl_pl_night / fl_pl_total
+
+        return A_Bond, eps_kelp, Tday, Tnight, eps_keating
+
+    def _albedo_eps_fpfs(self, fpfs_map, a_by_Rst):
+        """
+        This function takes occultation depth map and theta (latitude) and phi (longitude)
+        angles to compute the Bond albedo, heat re-distribution efficiency, and average dayside and nightside temperaturse.
+
+        Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
+        """
+
+        # First creating meshgrid of theta and phi
+        theta2d, phi2d = np.meshgrid(self.theta_ang + np.pi/2, self.phi_ang)
+
+        # -----------------------------------
+        #  To compute Bond albedo: method 1
+        # -----------------------------------
+
+        # We can directly compute the ratio of planetary to stellar flux since we already have Fp/F*
+        # We can simply integrate over Fp/F*
+        fl_fs_total = trapz2d( fpfs_map[...,None] * np.sin(theta2d[...,None]), self.phi_ang, self.theta_ang + np.pi/2 )[0]
+
+        # Computing the Bond albedo
+        A_Bond_fpfs = 1 - ( (a_by_Rst**2) * fl_fs_total / np.pi )
+
+        # -----------------------------------
+        #  To compute epsilon (kelp method)
+        # -----------------------------------
+        #
+        # kelp computes epsilon by taking ratio of nightside flux to the dayside flux
+
+        mask_day = np.abs(phi2d) < np.pi/2
+        mask_night = np.abs(phi2d) > np.pi/2
+
+        fl_day = np.sum( (fpfs_map * mask_day) ) / np.sum(mask_day)
+        fl_night = np.sum( (fpfs_map * mask_night) ) / np.sum(mask_night)
+
+        eps_kelp = fl_night / fl_day
+
+        # -----------------------------------------
+        #  epsilon (Keating, Cowan & Dang 2019)
+        # -----------------------------------------
+
+        # This method is slightly different -- they compute heat redistribution 
+        # efficiency as ratio of heat irradiated by nightside vs heat irradiated 
+        # by the whole planet
+
+        idx_night = np.abs(self.phi_ang) > np.pi/2
+
+        #fl_pl_night = trapz2d( fpfs_map[...,None] * np.sin(theta2d[...,None] ) * (np.abs(phi2d[...,None]) > np.pi/2 ), phi, theta )[0]
+        fl_pl_night = trapz2d( fpfs_map[idx_night, :, None] * np.sin(theta2d[idx_night, :, None] ), self.phi_ang[idx_night], self.theta_ang + np.pi/2 )[0]
+        eps_keating =  fl_pl_night / fl_fs_total
+
+        return A_Bond_fpfs, eps_kelp, eps_keating
+
+    def _albedo_kempton23(self, fpfs_phs, rst, a_by_Rst, teq, rprs):
+        """
+        This function takes occultation depth to compute the Bond albedo.
+
+        Much of the code is copied from: https://zenodo.org/records/7703086#.ZAZk1dLMJhE
+        """
+
+        # -----------------------------------
+        #  To compute Bond albedo: method 1
+        # -----------------------------------
+
+        # Where the transmission function is non-zero
+        idx1 = self.trans_fun > 0.
+
+        # Power received
+        fl_star = planck_func(lam=self.wav_star, temp=self.teff_star * u.K)
+        stellar_flux = np.trapz( y=fl_star, x=self.wav_star )
+        power_received = np.pi * ( (rprs * rst)**2 ) * np.pi * ( 1 / a_by_Rst**2 ) * stellar_flux
+
+        # Power radiated
+        Fstar = np.trapz(y=fl_star[idx1], x=self.wav_star[idx1]) * np.pi * (rst ** 2)
+        fp = np.mean( fpfs_phs * Fstar )
+        power_radiated = 4 * np.pi * fp
+
+        # Fraction of planetary flux emitted in TESS bandpass
+        fl_pl = planck_func(lam=self.wav_star, temp=teq)
+        fraction = np.trapz(y=fl_pl[idx1], x=self.wav_star[idx1]) / np.trapz(y=fl_pl, x=self.wav_star)
+        anisotropy = 1.08
+
+        # Computing the Bond albedo
+        A_Bond_fpfs = 1 - ( power_radiated / power_received / fraction / anisotropy )
+
+        return A_Bond_fpfs
+    
+    def albedo_eps_from_temp_map(self, a_by_Rst, uniform_nightside_temp=True, nsamples=2000):
+        # This function calculates the Bond albedo and heat re-distribution efficiency from the temperature map distribution.
+        # The heat re-distribution efficiency is calculated using both the kelp method and the Keating, Cowan & Dang (2019) method.
+
+        # First, we need to calculate the temperature map itself
+        self.temperature_map_distribution(nsamples=nsamples)
+
+        # Replacing the zero night side temperature with uniform nightside temperature
+        if uniform_nightside_temp:
+            ## Angles
+            theta2d, phi2d = np.meshgrid(self.theta_ang, self.phi_ang)
+
+            ## Mask for nightside
+            idx_night = np.abs(phi2d) > np.pi/2
+
+            ## Replacing all zeros on night-side with 
+            ## Mean of some temperatures
+
+            self.avg_night_temp_all = np.zeros( self.temp_map.shape[0] )
+
+            for inte in tqdm(range(self.temp_map.shape[0])):
+                ### Computing the average nightside temperatue
+                temp_night = self.temp_map[inte,:,:]*idx_night
+                temp_night[temp_night == 0.] = np.nan
+                avg_night_temp = np.nanmedian(temp_night.flatten())
+
+                self.avg_night_temp_all[inte] = avg_night_temp
+
+                ### Replacing zeros with average nightside temperature
+                self.temp_map[inte, :, :][ self.temp_map[inte, :, :] == 0. ] = avg_night_temp
+        
+        if np.isscalar(a_by_Rst):
+            a_by_Rst_val = a_by_Rst * np.ones(self.temp_map.shape[0])
+        else:
+            a_by_Rst_val = np.random.choice(a_by_Rst, size=self.temp_map.shape[0], replace=False)
+
+        # Now, we will compute the Bond albedo and heat re-distribution efficiency for each temperature map in the distribution
+        A_Bond_all = np.zeros( self.temp_map.shape[0] )
+        eps_kelp_all = np.zeros( self.temp_map.shape[0] )
+        Tday_all = np.zeros( self.temp_map.shape[0] )
+        Tnight_all = np.zeros( self.temp_map.shape[0] )
+        eps_keating_all = np.zeros( self.temp_map.shape[0] )
+        
+        for i in tqdm(range(self.temp_map.shape[0])):
+            A_Bond_all[i], eps_kelp_all[i], Tday_all[i], Tnight_all[i], eps_keating_all[i] = \
+                self._albedo_eps_tdaynight(temp_map=self.temp_map[i,:,:], a_by_Rst=a_by_Rst_val[i] )
+            
+        # Let's quickly print the median and 68 percentile confidence intervals for each of these parameters
+        print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
+        print('>>> --- Heat re-distribution efficiency (Kelp method): {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( eps_kelp_all ), np.percentile( eps_kelp_all, 84 ) - np.median( eps_kelp_all ), np.median( eps_kelp_all ) - np.percentile( eps_kelp_all, 16 ) ) )
+        print('>>> --- Dayside temperature: {:.3f} K (+{:.3f}/-{:.3f})'.format( np.median( Tday_all ), np.percentile( Tday_all, 84 ) - np.median( Tday_all ), np.median( Tday_all ) - np.percentile( Tday_all, 16 ) ) )
+        print('>>> --- Nightside temperature: {:.3f} K (+{:.3f}/-{:.3f})'.format( np.median( Tnight_all ), np.percentile( Tnight_all, 84 ) - np.median( Tnight_all ), np.median( Tnight_all ) - np.percentile( Tnight_all, 16 ) ) )
+        print('>>> --- Heat re-distribution efficiency (Keating, Cowan & Dang 2019 method): {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( eps_keating_all ), np.percentile( eps_keating_all, 84 ) - np.median( eps_keating_all ), np.median( eps_keating_all ) - np.percentile( eps_keating_all, 16 ) ) )
+                                                                                                                                                                                                                                                                      
+        return A_Bond_all, eps_kelp_all, Tday_all, Tnight_all, eps_keating_all
+    
+    def albedo_eps_from_fpfs_map(self, a_by_Rst):
+        # This function calculates the Bond albedo and heat re-distribution efficiency from the fp/f* map distribution.
+        # The heat re-distribution efficiency is calculated using both the kelp method and the Keating, Cowan & Dang (2019) method.
+
+        # Now, let's calculate the fp/f* map distribution
+        fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
+        for integration in tqdm( range( len(self.E) ) ):
+            J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
+                                           ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
+            for th in range(self.ntheta):
+                fpfs_map[integration, :, th] = np.sin(self.theta_ang[th] + np.pi/2) * J_phi * 0.75
+
+        if np.isscalar(a_by_Rst):
+            a_by_Rst_val = a_by_Rst * np.ones(fpfs_map.shape[0])
+
+        # Now, we will compute the Bond albedo and heat re-distribution efficiency for each fp/f* map in the distribution
+        A_Bond_all = np.zeros( fpfs_map.shape[0] )
+        eps_kelp_all = np.zeros( fpfs_map.shape[0] )
+        eps_keating_all = np.zeros( fpfs_map.shape[0] )
+        
+        for i in tqdm(range(fpfs_map.shape[0])):
+            A_Bond_all[i], eps_kelp_all[i], eps_keating_all[i] = \
+                self._albedo_eps_fpfs( fpfs_map=fpfs_map[i,:,:], a_by_Rst=a_by_Rst_val[i] )
+            
+        # Let's quickly print the median and 68 percentile confidence intervals for each of these parameters
+        print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
+        print('>>> --- Heat re-distribution efficiency (Kelp method): {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( eps_kelp_all ), np.percentile( eps_kelp_all, 84 ) - np.median( eps_kelp_all ), np.median( eps_kelp_all ) - np.percentile( eps_kelp_all, 16 ) ) )
+        print('>>> --- Heat re-distribution efficiency (Keating, Cowan & Dang 2019 method): {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( eps_keating_all ), np.percentile( eps_keating_all, 84 ) - np.median( eps_keating_all ), np.median( eps_keating_all ) - np.percentile( eps_keating_all, 16 ) ) )
+
+        return A_Bond_all, eps_kelp_all, eps_keating_all
+    
+    def albedo_from_kempton23(self, a_by_Rst, teq):
+        # This function calculates the Bond albedo using the method from Kempton et al. (2023)
+
+        # First, we need to calculate the occultation depth map itself
+        fpfs_map = np.zeros( (len(self.E), self.nphi) )
+        for integration in tqdm( range( len(self.E) ) ):
+            J_phi = self.A0[integration] + (self.A1[integration] * np.cos(self.phi_ang)) + (self.B1[integration] * np.sin(self.phi_ang))+\
+                                             (self.A2[integration] * np.cos(2*self.phi_ang)) + (self.B2[integration] * np.sin(2*self.phi_ang))
+            fpfs_map[integration, :] = np.sin(np.pi/2) * J_phi * 0.75
+
+        A_Bond_all = np.zeros( fpfs_map.shape[0] )
+
+        if np.isscalar(a_by_Rst):
+            a_by_Rst_val = a_by_Rst * np.ones(fpfs_map.shape[0])
+        
+        if np.isscalar(teq):
+            teq_val = teq * np.ones(fpfs_map.shape[0])
+
+        if np.isscalar(self.rprs):
+            rprs_arr = np.full(fpfs_map.shape, float(self.rprs))
+
+        for i in tqdm(range(fpfs_map.shape[0])):
+            A_Bond_all[i] = self._albedo_kempton23(fpfs_phs=fpfs_map[i,:], rst=self.rst, a_by_Rst=a_by_Rst_val[i], teq=teq_val[i], rprs=rprs_arr[i])
+
+        print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
+
+        return A_Bond_all
