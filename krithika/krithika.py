@@ -4367,6 +4367,164 @@ class SpectroscopicLC(object):
         return fig, axs
     
 class InvertCowanAgolPC(object):
+    """Invert phase curve observations to physical properties using Cowan & Agol (2008) model.
+
+    This class implements tools to analyze phase-curve observations, computing thermal properties 
+    (temperature maps, day/night temperatures, Bond albedo, heat re-distribution efficiencies) and
+    orbital properties (hotspot offset, phase offset) using the parameterized phase-curve 
+    model of Cowan & Agol (2008).
+    
+    The class leverages the model's Fourier expansion coefficients (A0, A1, B1, A2, B2)
+    derived from eclipse depths (E) and phase-curve coefficients (C1, D1, C2, D2) to
+    construct 2D thermal maps and compute various physical properties across posterior
+    samples for uncertainty quantification.
+
+    Parameters
+    ----------
+    E : ndarray
+        Array of eclipse depths (F_p/F_*) from posterior samples.
+    C1 : ndarray
+        Phase-curve cosine coefficient (first harmonic) from posterior samples.
+    D1 : ndarray
+        Phase-curve sine coefficient (first harmonic) from posterior samples.
+    C2 : ndarray
+        Phase-curve cosine coefficient (second harmonic) from posterior samples.
+    D2 : ndarray
+        Phase-curve sine coefficient (second harmonic) from posterior samples.
+    rprs : float or ndarray
+        Planet-to-star radius ratio. If scalar, same value used for all samples;
+        if array, sampled from for each posterior sample.
+    bandpass : dict, optional
+        Dictionary containing instrument bandpass data with keys 'WAVE' and 'RESPONSE'.
+        Required for computing brightness temperatures. Values must be Astropy Quantities.
+        Default is ``None``.
+    method : str, optional
+        Optimization method for fitting temperatures to flux (passed to
+        ``scipy.optimize.minimize``). Default is ``'Nelder-Mead'``.
+    teff_star : float (astropy.units.Quantity) or None, optional
+        Stellar effective temperature in Kelvin. Required for computing Bond albedo,
+        heat redistribution efficiency, and average day/night temperatures. If not
+        provided, a warning is printed. Default is ``None``.
+    stellar_spec : dict or None, optional
+        Dictionary containing stellar spectrum with keys 'WAVE' and 'FLUX'. Used
+        to interpolate stellar flux at bandpass wavelengths. If provided,
+        overrides ``teff_star``-based blackbody spectrum. Values must be Astropy
+        Quantities. Default is ``None``.
+    nthreads : int, optional
+        Number of CPU threads to use for parallel processing of temperature maps
+        and multiprocessing operations. Default is the total number of available
+        CPU cores (``multiprocessing.cpu_count()``).
+    ntheta : int, optional
+        Number of grid points across latitude (from -π/2 to π/2). Default is ``49``.
+    nphi : int, optional
+        Number of grid points across longitude (from -π to π). Default is ``100``.
+    pout : str, optional
+        Output directory for saving intermediate results (temperature maps,
+        brightness temperatures, etc.). Default is the current working directory.
+
+    Attributes
+    ----------
+    E, C1, D1, C2, D2 : ndarray
+        Stored input parameters (eclipse depths and phase-curve coefficients).
+    rprs : float or ndarray
+        Stored planet-to-star radius ratio.
+    bandpass, method, teff_star, stellar_spec : as above
+        Stored input parameters for spectral calculations.
+    nthreads, ntheta, nphi, pout : as above
+        Stored configuration parameters.
+    A0, A1, B1, A2, B2 : ndarray
+        Fourier coefficients derived from input parameters according to Cowan & Agol (2008)
+        model equations.
+    wav_star, fl_star : Astropy Quantity
+        Stellar wavelength array and flux spectrum (blackbody or interpolated).
+    wav_instrument, response_instrument, trans_fun : Astropy Quantity or ndarray
+        Instrument bandpass wavelengths, response curve, and normalized transmission
+        function evaluated on stellar wavelengths.
+    phi_ang, theta_ang : ndarray
+        1D arrays of longitude and latitude grid points.
+    temp_map : ndarray
+        3D array of temperature maps (shape: N_samples, N_phi, N_theta) computed
+        when :meth:`temperature_map_distribution` is called.
+
+    Main methods
+    ------------
+    TdayTnight()
+        Compute dayside and nightside brightness temperatures.
+    
+    calculate_0D_Ab_eps(ar)
+        Compute 0D Bond albedo and heat redistribution efficiency from brightness temperatures.
+    
+    phase_offsets(method='root')
+        Compute hotspot offset and phase offset from phase curve.
+    
+    temperature_map_distribution(nsamples=2000)
+        Compute 2D temperature map distribution across posterior samples.
+    
+    median_temperature_map(plot=False, cmap='plasma')
+        Compute and optionally plot median temperature map.
+    
+    equatorial_temp_map(plot=False, nsamples=2000)
+        Compute and optionally plot temperature along equator.
+    
+    forward_phase_curve_model(plot=False)
+        Compute forward-model phase curve from 2D flux distribution.
+    
+    albedo_eps_from_temp_map(a_by_Rst, uniform_nightside_temp=True, nsamples=2000)
+        Compute Bond albedo and heat redistribution from temperature map distribution.
+    
+    albedo_eps_from_fpfs_map(a_by_Rst)
+        Compute Bond albedo and heat redistribution from flux map distribution.
+    
+    albedo_from_kempton23(a_by_Rst, teq)
+        Compute Bond albedo using Kempton et al. (2023) method.
+
+    Notes
+    -----
+    - All temperature computations use the bandpass-weighted brightness temperature
+      assuming blackbody emission.
+    - The class uses multiprocessing for computationally intensive operations
+      (e.g., temperature map fitting).
+    - Intermediate results are cached as .npy files in ``pout`` to avoid
+      re-computation.
+    - The Cowan & Agol (2008) model assumes a parameterized intensity map I(φ, θ)
+      with latitudinal and longitudinal dependencies.
+
+    References
+    ----------
+    - Cowan, N. B., & Agol, E. 2008. Inverting Phase Functions to Map Exoplanets.
+      The Astrophysical Journal Letters, 678(2), L129.
+    - Kempton, E. M. R., et al. 2023. A reflective, metal-rich atmosphere for 
+      GJ 1214b from its JWST phase curve, Nature, 620(7972), 67
+    - Keating, D., Cowan, N. B., & Dang, L. 2019. Uniformly hot nightside 
+      temperatures on short-period gas giants. Nature Astronomy, 3, 1092.
+
+    Examples
+    --------
+    Analyze eclipse depths and phase curve to extract thermal properties:
+
+    >>> # Load posterior samples
+    >>> E = posterior_samples['eclipse_depth']  # Array of eclipse depths
+    >>> C1 = posterior_samples['phase_c1']
+    >>> D1 = posterior_samples['phase_d1']
+    >>> C2 = posterior_samples['phase_c2']
+    >>> D2 = posterior_samples['phase_d2']
+    >>> rprs = posterior_samples['rprs']
+    
+    >>> # Define bandpass and stellar spectrum
+    >>> bandpass = load_bandpass('TESS')  # Must have 'WAVE' and 'RESPONSE' keys
+    >>> teff_star = 5800 * u.K  # Kelvin
+    
+    >>> # Create the inversion object
+    >>> invert = InvertCowanAgolPC(E=E, C1=C1, D1=D1, C2=C2, D2=D2, rprs=rprs,
+    ...                             bandpass=bandpass, teff_star=teff_star)
+    
+    >>> # Compute temperature maps
+    >>> temp_maps = invert.temperature_map_distribution(nsamples=1000)
+    
+    >>> # Compute albedos and heat redistribution
+    >>> a_by_rst = 10.0  # Semi-major axis in units of stellar radius
+    >>> A_B, eps_kelp, T_day, T_night, eps_keating = invert.albedo_eps_from_temp_map(a_by_rst)
+    """
     def __init__(self, E, C1, D1, C2, D2, rprs, bandpass=None, method='Nelder-Mead', teff_star=None, stellar_spec=None,\
                  nthreads=multiprocessing.cpu_count(), ntheta=49, nphi=100, pout=os.getcwd()):
         ## Theta is along the latitude, phi is along the longitude
@@ -4425,6 +4583,40 @@ class InvertCowanAgolPC(object):
         self.theta_ang = np.linspace(-np.pi/2, np.pi/2, self.ntheta)
     
     def TdayTnight(self):
+        """Compute 0D dayside and nightside brightness temperatures.
+
+        Calculates integrated brightness temperatures for the dayside and
+        nightside using the eclipse depths and phase-curve parameters. Results are
+        cached to disk to avoid re-computation. Uses the
+        `BrightnessTemperatureCalculator` helper class for computation.
+
+        The dayside brightness temperature is derived directly from the eclipse depth,
+        while the nightside is estimated from E - 2*C1.
+
+        Returns
+        -------
+        bt_day : ndarray
+            Dayside brightness temperatures (in Kelvin) for each posterior sample.
+            Shape: (N_samples,).
+        bt_night : ndarray
+            Nightside brightness temperatures (in Kelvin) for each posterior sample.
+            Shape: (N_samples,).
+
+        Notes
+        -----
+        - Results are cached to ``{pout}/Brightness_temp_day.npy`` and
+          ``{pout}/Brightness_temp_night.npy``.
+        - Requires that ``self.bandpass``, ``self.teff_star`` (or
+          ``self.stellar_spec``), are properly set during initialization.
+        - This function should be called before :meth:`calculate_0D_Ab_eps`.
+
+        Examples
+        --------
+        >>> invert = InvertCowanAgolPC(E=E, C1=C1, D1=D1, C2=C2, D2=D2,
+        ...                             rprs=0.1, bandpass=bp, teff_star=5800 * u.K)
+        >>> bt_day, bt_night = invert.TdayTnight()
+        >>> print(f"Dayside brightness temperature: {np.median(bt_day)} K")
+        """
         # This function calculates the brightness temperatures of the dayside
         fp_day = np.copy( self.E )
         fp_night = self.E - ( 2 * self.C1 )
@@ -4436,12 +4628,12 @@ class InvertCowanAgolPC(object):
         if os.path.isfile(fname):
             print('>>>> --- The dayside brightness temperature file already exists...')
             print('         Loading it...')
-            self.bt_day = np.load(fname)
+            bt_day = np.load(fname)
         else:
             # And now we will use the BrightnessTemperatureCalculator class to calculate the brightness temperatures
             btc_day = BrightnessTemperatureCalculator( fp=fp_day, rprs=self.rprs, bandpass=self.bandpass, nthreads=self.nthreads,\
                                                        method=self.method, teff_star=self.teff_star, stellar_spec=self.stellar_spec, pout=self.pout )
-            self.bt_day = btc_day.compute()
+            bt_day = btc_day.compute()
             
             ## Renaming the saved file to make it clear that it is the dayside brightness temperature
             os.rename( self.pout + '/Brightness_temp.npy', self.pout + '/Brightness_temp_day.npy' )
@@ -4453,19 +4645,54 @@ class InvertCowanAgolPC(object):
         if os.path.isfile(fname):
             print('>>>> --- The nightside brightness temperature file already exists...')
             print('         Loading it...')
-            self.bt_night = np.load(fname)
+            bt_night = np.load(fname)
         else:
             # And now we will use the BrightnessTemperatureCalculator class to calculate the brightness temperatures
             btc_night = BrightnessTemperatureCalculator( fp=fp_night, rprs=self.rprs, bandpass=self.bandpass, nthreads=self.nthreads,\
                                                          method=self.method, teff_star=self.teff_star, stellar_spec=self.stellar_spec, pout=self.pout )
-            self.bt_night = btc_night.compute()
+            bt_night = btc_night.compute()
 
             ## Renaming the saved file to make it clear that it is the nightside brightness temperature
             os.rename( self.pout + '/Brightness_temp.npy', self.pout + '/Brightness_temp_night.npy' )
 
-        return self.bt_day, self.bt_night
+        return bt_day, bt_night
     
     def calculate_0D_Ab_eps(self, ar):
+        """Compute Bond albedo and heat redistribution efficiency from 0D brightness temperatures.
+
+        Calculates the 0D (calculated from spatially averaged temperatures) Bond albedo 
+        and heat redistribution efficiency using the dayside and nightside brightness 
+        temperatures computed from :meth:`TdayTnight`. This implementation uses the 
+        relationship between the planet's temperature, stellar radiation, and thermal emission
+        to infer physical properties.
+
+        Parameters
+        ----------
+        ar : float, or ndarray
+            Semi-major axis in units of stellar radius (a/R_*).
+
+        Returns
+        -------
+        A_B : ndarray
+            Bond albedo for each posterior sample (unitless).
+            Shape: (N_samples,). Values typically range from 0 to 1.
+        eps : ndarray
+            Heat redistribution efficiency for each posterior sample (unitless).
+            Shape: (N_samples,). Values typically range from 0 to 1.
+
+        Notes
+        -----
+        - Requires :meth:`TdayTnight` to be called first (or this function will call it).
+        - Assumes the 0D approximation where the planet is treated as having
+          uniform dayside and nightside temperatures.
+
+        Examples
+        --------
+        >>> bt_day, bt_night = invert.TdayTnight()
+        >>> A_Bond, eps = invert.calculate_0D_Ab_eps(ar=10.0)
+        >>> print(f"Bond albedo: {np.median(A_Bond):.3f}")
+        >>> print(f"Heat redistribution: {np.median(eps):.3f}")
+        """
         # This function calculates the 0D albedo and recirculation efficiency from the brightness temperatures
         T_day, T_night = self.TdayTnight()
 
@@ -4480,6 +4707,43 @@ class InvertCowanAgolPC(object):
         return A_B, eps
     
     def _find_hotspot_off(self, a1, b1, a2, b2, method):
+        """Find the hotspot offset from phase-curve coefficients.
+
+        Helper method that solves for the longitude (phase angle) where the
+        brightness temperature reaches its maximum by finding where
+        dFp/dφ = 0. The hotspot offset quantifies how far the longitude of
+        maximum temperature has shifted from the substellar point (φ = 0).
+
+        Parameters
+        ----------
+        a1 : float
+            First-harmonic cosine coefficient (A1).
+        b1 : float
+            First-harmonic sine coefficient (B1).
+        a2 : float
+            Second-harmonic cosine coefficient (A2).
+        b2 : float
+            Second-harmonic sine coefficient (B2).
+        method : str
+            Root-finding method: ``'root'`` uses ``scipy.optimize.root`` 
+            or ``'fsolve'`` uses ``scipy.optimize.fsolve``.
+
+        Returns
+        -------
+        off_loc : float
+            Hotspot offset in degrees. The location of the brightness maximum
+            relative to the substellar point.
+
+        Notes
+        -----
+        Finds the solution to:
+        
+        $$ \\frac{dF_p}{d\\varphi} = -a_1 \\sin(\\varphi) + b_1 \\cos(\\varphi) - 2a_2 \\sin(2\\varphi) + 2b_2 \\cos(2\\varphi) = 0 $$
+
+        Examples
+        --------
+        >>> off = invert._find_hotspot_off(a1, b1, a2, b2, method='root')
+        """
         # Helper function to calculate the hotspot offset
         # First writing a function solving which will give the location of the hotspot offset
         # So, what I did was to compute Fp/F* as a function of phi, and solve for dFp/dphi = 0
@@ -4498,6 +4762,45 @@ class InvertCowanAgolPC(object):
         return off_loc
     
     def _find_phase_off(self, c1, d1, c2, d2, method):
+        """Find the phase offset from phase-curve coefficients.
+
+        Helper method that solves for the phase angle where the observed flux
+        reaches its maximum by finding where dFp/dωt = 0. The phase offset
+        quantifies how far the peak of the phase curve has shifted from the
+        secondary eclipse (ωt = π).
+
+        Parameters
+        ----------
+        c1 : float
+            First-harmonic cosine coefficient (C1) from phase-curve fitting.
+        d1 : float
+            First-harmonic sine coefficient (D1) from phase-curve fitting.
+        c2 : float
+            Second-harmonic cosine coefficient (C2) from phase-curve fitting.
+        d2 : float
+            Second-harmonic sine coefficient (D2) from phase-curve fitting.
+        method : str
+            Root-finding method: ``'root'`` uses ``scipy.optimize.root``
+            or ``'fsolve'`` uses ``scipy.optimize.fsolve``.
+
+        Returns
+        -------
+        off_phs_deg : float
+            Phase offset in degrees relative to ωt = π (secondary eclipse).
+            Negative offsets indicate the peak occurs before eclipse;
+            positive offsets indicate it occurs after eclipse.
+
+        Notes
+        -----
+        Finds the solution to:
+        
+        $$ \\frac{dF_p}{d\\omega t} = -c_1 \\sin(\\omega t) + d_1 \\cos(\\omega t) - 2c_2 \\sin(2\\omega t) + 2d_2 \\cos(2\\omega t) = 0 $$
+
+        Examples
+        --------
+        >>> phase_off = invert._find_phase_off(c1, d1, c2, d2, method='root')
+        >>> print(f"Phase offset: {phase_off} degrees")
+        """
         # Another helper function to calculate the phase offset
         # First writing a function solving which will give the location of the hotspot offset
         # So, what I did was to compute Fp/F* as a function of phi, and solve for dFp/dphi = 0
@@ -4519,6 +4822,51 @@ class InvertCowanAgolPC(object):
         return off_phs_deg
     
     def phase_offsets(self, method='root'):
+        """Compute hotspot offset and phase offset from phase-curve parameters.
+
+        Calculates two complementary measures of the offset of thermal features
+        from expected locations:
+        
+        1. **Hotspot offset**: The longitude (in degrees) where the brightness
+           temperature maximum occurs, relative to the substellar point.
+        2. **Phase offset**: The orbital phase (in degrees relative to secondary
+           eclipse) where the observed phase-curve flux peaks.
+
+        These quantities help constrain heat transport and atmospheric dynamics
+        by revealing where thermal features are located relative to the
+        tidally-locked dayside.
+
+        Parameters
+        ----------
+        method : str, optional
+            Root-finding method to use for identifying extrema. Options are
+            ``'root'`` (default, uses ``scipy.optimize.root``) or ``'fsolve'``
+            (uses ``scipy.optimize.fsolve``). Default is ``'root'``.
+
+        Returns
+        -------
+        hotspot_off : ndarray
+            Hotspot offset in degrees for each posterior sample.
+            Shape: (N_samples,). Must be computed in the range [-180, 180] degrees.
+        phase_off : ndarray
+            Phase offset in degrees for each posterior sample.
+            Shape: (N_samples,). Positive values indicate the phase-curve
+            maximum occurs before the secondary eclipse; negative values
+            indicate it occurs after.
+
+        Notes
+        -----
+        - Computation uses :meth:`_find_hotspot_off` and :meth:`_find_phase_off`
+          for each posterior sample.
+        - This method uses progress bars (tqdm) to show computation progress.
+        - Results are not cached; re-computing will recalculate offsets from scratch.
+
+        Examples
+        --------
+        >>> hotspot_off, phase_off = invert.phase_offsets(method='root')
+        >>> print(f"Median hotspot offset: {np.median(hotspot_off):.1f} degrees")
+        >>> print(f"Median phase offset: {np.median(phase_off):.1f} degrees")
+        """
         ## This function calculates the phase offset: 1) phase offset of the observed phase curve, and
         ## 2) shift of the maximum of the temperature map from the substellar point (the "hotspot offset")
 
@@ -4534,6 +4882,42 @@ class InvertCowanAgolPC(object):
         return hotspot_off, phase_off
     
     def _calculate_2d_temp_map(self, fpfs_2d, rprs_ratio):
+        """Compute 2D temperature map from 2D flux distribution.
+
+        Helper method that converts a 2D array of bandpass-normalized planet-to-star
+        flux ratios (F_p/F_*) into a 2D brightness temperature map by fitting a
+        blackbody spectrum to each grid point independently.
+
+        Parameters
+        ----------
+        fpfs_2d : ndarray
+            2D array of F_p/F_* values with shape (N_phi, N_theta) representing
+            the flux distribution across longitude and latitude.
+        rprs_ratio : float
+            Planet-to-star radius ratio.
+
+        Returns
+        -------
+        Tmap : ndarray
+            2D array of brightness temperatures (in Kelvin) with same shape as
+            ``fpfs_2d``. Grid points where ``fpfs_2d <= 0`` have temperature set to 0.
+
+        Notes
+        -----
+        - For each grid point with positive flux, fits a blackbody spectrum
+          that best reproduces the observed bandpass-weighted flux.
+        - Uses ``scipy.optimize.minimize`` with the method from ``self.method``
+          to find the temperature that minimizes chi-squared difference between
+          observed and modeled flux.
+        - Temperatures are computed independently per grid point.
+        - Used internally by :meth:`temperature_map_distribution` and
+          :meth:`median_temperature_map`.
+
+        Examples
+        --------
+        >>> Tmap = invert._calculate_2d_temp_map(fpfs_2d, rprs_ratio=0.1)
+        >>> print(f"Max temperature: {np.nanmax(Tmap)} K")
+        """
         # This is helper function to calculate the 2D temperature map for a given 2D fp/f* map and rprs ratio
         ## Temperature map
         Tmap = np.zeros( (self.nphi, self.ntheta) )
@@ -4555,6 +4939,48 @@ class InvertCowanAgolPC(object):
         return Tmap
     
     def temperature_map_distribution(self, nsamples=2000):
+        """Compute 2D temperature map distribution across posterior samples.
+
+        Builds a distribution of 2D temperature maps (shape: N_samples, N_phi, N_theta)
+        by converting the posterior distribution of flux maps into temperature
+        maps via brightness temperature fitting. Results are cached and can be
+        re-used by other methods.
+
+        This method randomly samples from the posterior distribution if more
+        posterior samples exist than requested, improving computational efficiency
+        while maintaining statistical representation.
+
+        Parameters
+        ----------
+        nsamples : int, optional
+            Number of posterior samples to process (randomly selected from all
+            available samples). Default is ``2000``.
+
+        Returns
+        -------
+        temp_map : ndarray
+            3D array of brightness temperature maps with shape
+            (nsamples, N_phi, N_theta). Also stored as ``self.temp_map``.
+
+        Notes
+        -----
+        - Uses multiprocessing with ``self.nthreads`` processes for parallel
+          computation of temperature maps.
+        - Results are cached to ``{pout}/Temperature_map.npy`` and reloaded
+          on subsequent calls.
+        - Uses progress bars (tqdm) to show computation progress.
+        - This is a computationally intensive operation and typically requires
+          several minutes to hours for large grids.
+
+        Examples
+        --------
+        >>> temp_maps = invert.temperature_map_distribution(nsamples=1000)
+        >>> print(temp_maps.shape)
+        (1000, 100, 49)
+        
+        >>> # Get median map
+        >>> temp_median = np.median(temp_maps, axis=0)
+        """
         # This function calculates the distribution of the temperature maps
 
         # Now, let's calculate the fp/f* map distribution
@@ -4594,7 +5020,46 @@ class InvertCowanAgolPC(object):
         return self.temp_map
 
     def median_temperature_map(self, plot=False, cmap='plasma'):
-        # This function calculates the median temperature map and plots it if plot=True
+        """Compute and optionally plot the median temperature map across posteriors.
+
+        Computes the median of the flux distribution across all posterior samples,
+        then converts it to a single 2D temperature map. This provides a robust
+        point estimate of the planet's thermal structure.
+
+        Parameters
+        ----------
+        plot : bool, optional
+            If ``True``, generate a Mollweide projection plot of the median
+            temperature map. Default is ``False``.
+        cmap : str, optional
+            Colormap name (passed to matplotlib) for the plot. Default is
+            ``'plasma'``.
+
+        Returns
+        -------
+        temp_map_median : ndarray
+            2D array of median brightness temperatures with shape (N_phi, N_theta).
+            Also saved to ``{pout}/Median_Temperature_map.npy``.
+        fig : matplotlib.figure.Figure or None
+            Figure object if ``plot=True``, otherwise ``None``.
+        ax : matplotlib.axes.Axes or None
+            Axes object (Mollweide projection) if ``plot=True``, otherwise ``None``.
+        cax : matplotlib.collections.QuadMesh or None
+            Mesh container from pcolormesh if ``plot=True``, otherwise ``None``.
+
+        Notes
+        -----
+        - Results are cached to ``{pout}/Median_Temperature_map.npy`` and
+          reloaded on subsequent calls.
+        - If ``plot=True``, the temperature color scale is set to
+          median ± 5σ (using MAD-based standard deviation) to highlight structure.
+        - Uses a Mollweide projection to show the full planetary surface.
+
+        Examples
+        --------
+        >>> Tmap_median = invert.median_temperature_map(plot=True, cmap='viridis')
+        >>> print(f"Max dayside temperature: {np.nanmax(Tmap_median)} K")
+        """
 
         # Simply load the file if it already exists
         temp_map_path = Path(self.pout + '/Median_Temperature_map.npy')
@@ -4639,6 +5104,36 @@ class InvertCowanAgolPC(object):
             return temp_map_median
         
     def _compute_temp_along_longitude(self, fpfs, rprs_ratio):
+        """Compute 1D temperature profile along longitude (i.e., for a given latitude such as equator).
+
+        Helper method that converts a 1D array of bandpass-normalized planet-to-star
+        flux ratios along any longitude into a 1D brightness temperature
+        profile by fitting blackbody spectra.
+
+        Parameters
+        ----------
+        fpfs : ndarray
+            1D array of F_p/F_* values with shape (N_phi,) representing the
+            flux distribution across longitude at a given latitude.
+        rprs_ratio : float
+            Planet-to-star radius ratio for this sample.
+
+        Returns
+        -------
+        Tmap : ndarray
+            1D array of brightness temperatures (in Kelvin) with shape (N_phi,).
+            Grid points where ``fpfs <= 0`` have temperature set to 0.
+
+        Notes
+        -----
+        - Used internally by :meth:`equatorial_temp_map`.
+        - Similar to :meth:`_calculate_2d_temp_map` but computes only along
+          latitude θ = π/2 (equator).
+
+        Examples
+        --------
+        >>> Tmap_equator = invert._compute_temp_along_longitude(fpfs_1d, 0.1)
+        """
         ## This is a helper function to compute the temperature along the longitude for a given fp/f* map and rprs ratio
         # Temperature map
         Tmap = np.zeros(self.nphi)
@@ -4659,6 +5154,45 @@ class InvertCowanAgolPC(object):
         return Tmap
     
     def equatorial_temp_map(self, plot=False, nsamples=2000):
+        """Compute and optionally plot temperature profile along the equator.
+
+        Calculates a distribution of 1D temperature profiles along the equator
+        (θ = 0) across posterior samples. Useful for understanding longitudinal
+        variations in brightness temperature at the substellar latitude.
+
+        Parameters
+        ----------
+        plot : bool, optional
+            If ``True``, generate a plot showing the median equatorial temperature
+            profile with individual posterior samples overplotted. Default is ``False``.
+        nsamples : int, optional
+            Number of posterior samples to process. Default is ``2000``.
+
+        Returns
+        -------
+        temp_map_equatorial : ndarray
+            2D array of brightness temperatures along the equator with shape
+            (nsamples, N_phi). Also saved to
+            ``{pout}/Equatorial_Temperature_map.npy``.
+        fig : matplotlib.figure.Figure or None
+            Figure object if ``plot=True``, otherwise ``None``.
+        axs : matplotlib.axes.Axes or None
+            Axes object if ``plot=True``, otherwise ``None``.
+
+        Notes
+        -----
+        - Uses multiprocessing to parallelize temperature calculations.
+        - Results are cached and reloaded on subsequent calls.
+        - Posterior samples are randomly selected if the total exceeds ``nsamples``.
+        - When ``plot=True``, the plot shows 100 random posterior samples as light
+          curves and the median as a heavy line.
+
+        Examples
+        --------
+        >>> Tmap_equator = invert.equatorial_temp_map(plot=True, nsamples=1000)
+        >>> print(Tmap_equator.shape)
+        (1000, 100)
+        """
         # This function calculates the temperature map along the equator (theta=0) and plots it if plot=True
 
         # Simply load the file if it already exists
@@ -4711,6 +5245,43 @@ class InvertCowanAgolPC(object):
             return temp_map_equatorial
         
     def _phase_curve_forward_model(self, I_phi_theta, phi, theta, xi):
+        """Compute phase-curve signal from a 2D flux distribution.
+
+        Helper method that integrates a 2D flux distribution I(φ, θ) over the
+        visible hemisphere as a function of orbital phase to predict the
+        observed phase curve. Uses integration over visible longitude and latitude.
+
+        Parameters
+        ----------
+        I_phi_theta : ndarray
+            2D array of intensity map I(φ, θ) with shape (N_phi, N_theta).
+        phi : ndarray
+            1D array of longitude values (in radians) from -π to π.
+        theta : ndarray
+            1D array of latitude values (in radians) from -π/2 to π/2.
+        xi : ndarray
+            1D array of orbital phase angles (in radians). ξ = 0 at occultation,
+            ξ = ±π at transits.
+
+        Returns
+        -------
+        f_xi : ndarray
+            Phase curve signal (F_p/F_* equivalent) for each orbital phase.
+            Shape: (len(xi),).
+
+        Notes
+        -----
+        - Integrates only over the visible hemisphere for each phase angle.
+        - Uses meridian longitude bounds that change with orbital phase:
+          only pixels with -ξ - π/2 < φ < -ξ + π/2 are integrated.
+        - Uses 2D trapezoidal integration from ``scipy.integrate.trapz2d``.
+        - Used internally by :meth:`forward_phase_curve_model`.
+
+        Examples
+        --------
+        >>> xi = np.linspace(-np.pi, np.pi, 100)
+        >>> fpcs = invert._phase_curve_forward_model(I_2d, phi_ang, theta_ang, xi)
+        """
         # Given the 2D flux distribution map, I(phi, theta), we will compute phase curve signal
         # as a function of xi (which is 0 at occultation and +/- pi at transits)
 
@@ -4742,6 +5313,40 @@ class InvertCowanAgolPC(object):
         return f_xi
     
     def forward_phase_curve_model(self, plot=False):
+        """Compute forward-model phase curve from 2D flux distribution.
+
+        Converts the median 2D flux map into a forward-modeled phase curve for
+        comparison with the fitted phase-curve parameterization. Provides a
+        self-consistency check between the temperature-map representation and
+        the fitted phase-curve model.
+
+        Parameters
+        ----------
+        plot : bool, optional
+            If ``True``, generate a plot overlaying the forward model on the
+            fitted parameterized phase curve. Default is ``False``.
+
+        Returns
+        -------
+        FpFs_forward_model : ndarray
+            Forward-model phase curve values (F_p/F_*) sampled at 1000 orbital
+            phase angles from -π to π. Also returned when ``plot=True``.
+        fig : matplotlib.figure.Figure or None
+            Figure object if ``plot=True``, otherwise ``None``.
+        axs : matplotlib.axes.Axes or None
+            Axes object if ``plot=True``, otherwise ``None``.
+
+        Notes
+        -----
+        - Uses the median of the flux map distribution across all posterior samples.
+        - Fitted phase curve is computed from posterior median values of C1, D1, C2, D2.
+        - Plots both curves for visual comparison of model consistency.
+
+        Examples
+        --------
+        >>> FpFs_fwd = invert.forward_phase_curve_model(plot=True)
+        >>> print(f"Max forward model flux: {np.max(FpFs_fwd):.4f}")
+        """
         # Computing the Fp/F* (i.e., I(phi, theta) ) map
         I_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
         for integration in tqdm( range( len(self.E) ) ):
@@ -4770,12 +5375,51 @@ class InvertCowanAgolPC(object):
             return FpFs_forward_model
         
     def _albedo_eps_tdaynight(self, temp_map, a_by_Rst):
-        """
-        This function takes temperature map and theta (latitude) and phi (longitude)
-        angles to compute the Bond albedo and heat re-distribution efficiency.
+        """Compute Bond albedo and heat redistribution from a 2D temperature map.
 
-        Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
+        Helper method that computes Bond albedo, dayside/nightside brightness
+        temperatures, and heat redistribution efficiency (using two different methods)
+        from a single 2D temperature map.
+
+        Parameters
+        ----------
+        temp_map : ndarray
+            2D array of brightness temperatures with shape (N_phi, N_theta).
+        a_by_Rst : float
+            Semi-major axis in units of stellar radius (a/R_*).
+
+        Returns
+        -------
+        A_Bond : float
+            Bond albedo computed from total planetary flux vs stellar flux.
+        eps_kelp : float
+            Heat redistribution efficiency using the Kelp method (nightside/dayside
+            flux ratio).
+        Tday : float
+            Dayside brightness temperature (integrated over dayside).
+        Tnight : float
+            Nightside brightness temperature (integrated over nightside).
+        eps_keating : float
+            Heat redistribution efficiency using Keating et al. (2019) method
+            (nightside flux / total flux).
+
+        Notes
+        -----
+        - Uses Stefan-Boltzmann law to relate temperature to thermal radiation.
+        - Dayside defined as |φ| < π/2; nightside defined as |φ| > π/2.
+        - Uses 2D trapezoidal integration.
+        - Original kelp-based code adapted for this implementation.
+
+        References
+        ----------
+        - Keating, D., Cowan, N. B., & Dang, L. 2019. Uniformly hot nightside 
+          temperatures on short-period gas giants. Nature Astronomy, 3, 1092.
+        - Original kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
         """
+        # This function takes temperature map and theta (latitude) and phi (longitude)
+        # angles to compute the Bond albedo and heat re-distribution efficiency.
+
+        # Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
 
         # First creating meshgrid of theta and phi
         theta2d, phi2d = np.meshgrid(self.theta_ang + np.pi/2, self.phi_ang)
@@ -4840,13 +5484,48 @@ class InvertCowanAgolPC(object):
         return A_Bond, eps_kelp, Tday, Tnight, eps_keating
 
     def _albedo_eps_fpfs(self, fpfs_map, a_by_Rst):
-        """
-        This function takes occultation depth map and theta (latitude) and phi (longitude)
-        angles to compute the Bond albedo, heat re-distribution efficiency, and average dayside and nightside temperaturse.
+        """Compute Bond albedo and heat redistribution from a 2D flux map.
 
-        Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
-        """
+        Helper method that computes Bond albedo and heat redistribution efficiency
+        (using two different methods) directly from a 2D F_p/F_* map, without
+        requiring intermediate temperature conversion.
 
+        Parameters
+        ----------
+        fpfs_map : ndarray
+            2D array of F_p/F_* values with shape (N_phi, N_theta).
+        a_by_Rst : float
+            Semi-major axis in units of stellar radius (a/R_*).
+
+        Returns
+        -------
+        A_Bond_fpfs : float
+            Bond albedo computed as 1 - (a/R*)^2 * integrated(F_p/F_*) / π.
+        eps_kelp : float
+            Heat redistribution efficiency (Kelp method): nightside/dayside
+            flux ratio.
+        eps_keating : float
+            Heat redistribution efficiency (Keating et al. 2019 method):
+            nightside flux / total flux.
+
+        Notes
+        -----
+        - Similar approach to :meth:`_albedo_eps_tdaynight` but operates on
+          flux map rather than temperature map.
+        - Dayside defined as |φ| < π/2; nightside defined as |φ| > π/2.
+        - Uses 2D trapezoidal integration.
+        - Original kelp-based code adapted for this implementation.
+
+        References
+        ----------
+        - Keating, D., Cowan, N. B., & Dang, L. 2019. Uniformly hot nightside 
+          temperatures on short-period gas giants. Nature Astronomy, 3, 1092.
+        - Original kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
+        """
+        # This function takes occultation depth map and theta (latitude) and phi (longitude)
+        # angles to compute the Bond albedo, heat re-distribution efficiency, and average dayside and nightside temperaturse.
+
+        # Much of the code is copied from kelp package: https://github.com/bmorris3/kelp/blob/219a922849634d9e982cd7bd05910596dea2ef6e/kelp/core.py#L431
         # First creating meshgrid of theta and phi
         theta2d, phi2d = np.meshgrid(self.theta_ang + np.pi/2, self.phi_ang)
 
@@ -4892,12 +5571,48 @@ class InvertCowanAgolPC(object):
         return A_Bond_fpfs, eps_kelp, eps_keating
 
     def _albedo_kempton23(self, fpfs_phs, rst, a_by_Rst, teq, rprs):
-        """
-        This function takes occultation depth to compute the Bond albedo.
+        """Compute Bond albedo using Kempton et al. (2023) method.
 
-        Much of the code is copied from: https://zenodo.org/records/7703086#.ZAZk1dLMJhE
-        """
+        Helper method that calculates Bond albedo from eclipse depth using the
+        energy-balance method of Kempton et al. (2023), accounting for the
+        fraction of planetary flux emitted in the bandpass and an anisotropy
+        factor.
 
+        Parameters
+        ----------
+        fpfs_phs : float
+            Average measured F_p/F_* in the bandpass (from eclipse or phase curve).
+        rst : float
+            Stellar radius (in solar radii or consistent units).
+        a_by_Rst : float
+            Semi-major axis in units of stellar radius.
+        teq : float
+            Equilibrium temperature of the planet (in Kelvin).
+        rprs : float
+            Planet-to-star radius ratio.
+
+        Returns
+        -------
+        A_Bond_fpfs : float
+            Bond albedo computed from energy balance accounting for bandpass-dependent
+            flux emission and anisotropy.
+
+        Notes
+        -----
+        - Assumes the measured F_p/F_* represents the hemisphere-averaged thermal emission.
+        - Uses an anisotropy factor of 1.08 (typical for tidally-locked planets).
+        - The method accounts for the fact that only a fraction of the planet's
+          total blackbody radiation falls within the instrument bandpass.
+        - Original code adapted from Kempton et al. (2023) implementation.
+
+        References
+        ----------
+        - Kempton, E. M. R., et al. 2023. A reflective, metal-rich atmosphere for 
+          GJ 1214b from its JWST phase curve, Nature, 620(7972), 67
+        """
+        # This function takes occultation depth to compute the Bond albedo.
+
+        # Much of the code is copied from: https://zenodo.org/records/7703086#.ZAZk1dLMJhE
         # -----------------------------------
         #  To compute Bond albedo: method 1
         # -----------------------------------
@@ -4925,7 +5640,58 @@ class InvertCowanAgolPC(object):
 
         return A_Bond_fpfs
     
-    def albedo_eps_from_temp_map(self, a_by_Rst, uniform_nightside_temp=True, nsamples=2000):
+    def albedo_eps_from_temp_map(self, a_by_Rst, uniform_nightside_temp=False, nsamples=2000):
+        """Compute Bond albedo and heat redistribution from temperature map distribution.
+
+        Calculates Bond albedo (A_Bond), heat redistribution efficiency (ε) using
+        two methods (Kelp and Keating et al. 2019), and dayside/nightside brightness
+        temperatures from the distribution of 2D temperature maps.
+
+        Parameters
+        ----------
+        a_by_Rst : float or ndarray
+            Semi-major axis in units of stellar radius (a/R_*). If scalar,
+            same value used for all samples; if array, sampled for each.
+        uniform_nightside_temp : bool, optional
+            If ``True``, replace zero nightside temperatures (from zero grid
+            points) with the median of measured nightside temperatures for
+            self-consistency. Default is ``False``.
+        nsamples : int, optional
+            Number of posterior samples to process when computing temperature maps.
+            Default is ``2000``.
+
+        Returns
+        -------
+        A_Bond_all : ndarray
+            Bond albedo for each posterior sample. Shape: (N_samples,).
+        eps_kelp_all : ndarray
+            Heat redistribution efficiency (Kelp method) for each sample.
+            Shape: (N_samples,). Computed as nightside/dayside flux ratio.
+        Tday_all : ndarray
+            Dayside brightness temperature for each sample. Shape: (N_samples,).
+        Tnight_all : ndarray
+            Nightside brightness temperature for each sample. Shape: (N_samples,).
+        eps_keating_all : ndarray
+            Heat redistribution efficiency (Keating et al. 2019 method).
+            Shape: (N_samples,). Computed as nightside flux / total flux.
+
+        Notes
+        -----
+        - Calls :meth:`temperature_map_distribution` to compute temperature maps if
+          not already cached.
+        - Prints posterior median and 68% credible intervals for all output parameters.
+        - Uses :meth:`_albedo_eps_tdaynight` for computation per sample.=
+
+        References
+        ----------
+        - Keating, D., Cowan, N. B., & Dang, L. 2019. Uniformly hot nightside 
+          temperatures on short-period gas giants. Nature Astronomy, 3, 1092.
+
+        Examples
+        --------
+        >>> a_by_rst = 10.0
+        >>> A_B, eps_k, T_d, T_n, eps_keat = invert.albedo_eps_from_temp_map(a_by_rst)
+        """
         # This function calculates the Bond albedo and heat re-distribution efficiency from the temperature map distribution.
         # The heat re-distribution efficiency is calculated using both the kelp method and the Keating, Cowan & Dang (2019) method.
 
@@ -4982,6 +5748,41 @@ class InvertCowanAgolPC(object):
         return A_Bond_all, eps_kelp_all, Tday_all, Tnight_all, eps_keating_all
     
     def albedo_eps_from_fpfs_map(self, a_by_Rst):
+        """Compute Bond albedo and heat redistribution from flux map distribution.
+
+        Calculates Bond albedo and heat redistribution efficiency directly from
+        the 2D distribution of F_p/F_* maps (without intermediate temperature
+        conversion). Provides an alternative approach to :meth:`albedo_eps_from_temp_map`
+        that does not require brightness temperature estimation.
+
+        Parameters
+        ----------
+        a_by_Rst : float or ndarray
+            Semi-major axis in units of stellar radius (a/R_*). If scalar,
+            same value used for all samples; if array, sampled for each.
+
+        Returns
+        -------
+        A_Bond_all : ndarray
+            Bond albedo for each posterior sample. Shape: (N_samples,).
+        eps_kelp_all : ndarray
+            Heat redistribution efficiency (Kelp method). Shape: (N_samples,).
+        eps_keating_all : ndarray
+            Heat redistribution efficiency (Keating et al. 2019 method).
+            Shape: (N_samples,).
+
+        Notes
+        -----
+        - Does not require calls to temperature-mapping routines.
+        - Computes F_p/F_* maps directly from Fourier coefficients.
+        - Prints posterior median and 68% credible intervals for all outputs.
+        - Uses :meth:`_albedo_eps_fpfs` for computation per sample.
+
+        Examples
+        --------
+        >>> a_by_rst = 10.0
+        >>> A_B, eps_k, eps_keat = invert.albedo_eps_from_fpfs_map(a_by_rst)
+        """
         # This function calculates the Bond albedo and heat re-distribution efficiency from the fp/f* map distribution.
         # The heat re-distribution efficiency is calculated using both the kelp method and the Keating, Cowan & Dang (2019) method.
 
@@ -5013,6 +5814,45 @@ class InvertCowanAgolPC(object):
         return A_Bond_all, eps_kelp_all, eps_keating_all
     
     def albedo_from_kempton23(self, a_by_Rst, teq):
+        """Compute Bond albedo using Kempton et al. (2023) method across posteriors.
+
+        Calculates Bond albedo for each posterior sample using the energy-balance
+        method of Kempton et al. (2023). This approach directly relates observed
+        eclipse depths to Bond albedo accounting for bandpass-dependent radiation.
+
+        Parameters
+        ----------
+        a_by_Rst : float or ndarray
+            Semi-major axis in units of stellar radius (a/R_*). If scalar,
+            same value used for all samples; if array, sampled for each.
+        teq : float or ndarray
+            Equilibrium temperature of the planet in Kelvin. If scalar,
+            same value used for all samples; if array, sampled for each.
+
+        Returns
+        -------
+        A_Bond_all : ndarray
+            Bond albedo for each posterior sample. Shape: (N_samples,).
+            Printed to console as median ± 68% credible interval.
+
+        Notes
+        -----
+        - Uses :meth:`_albedo_kempton23` for computation per sample.
+        - Requires ``self.rst`` (stellar radius) to be set on the instance.
+        - Prints posterior median and 68% credible intervals.
+
+        References
+        ----------
+        - Kempton, E. M. R., et al. 2023. A reflective, metal-rich atmosphere for 
+          GJ 1214b from its JWST phase curve, Nature, 620(7972), 67
+
+        Examples
+        --------
+        >>> a_by_rst = 10.0
+        >>> teq = 1500  # Kelvin
+        >>> A_Bond = invert.albedo_from_kempton23(a_by_rst, teq)
+        >>> print(f"Bond albedo: {np.median(A_Bond):.3f}")
+        """
         # This function calculates the Bond albedo using the method from Kempton et al. (2023)
 
         # First, we need to calculate the occultation depth map itself
