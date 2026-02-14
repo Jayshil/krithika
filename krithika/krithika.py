@@ -2923,13 +2923,17 @@ class ApPhoto(object):
 
         return fig, axs
     
-    def pld_correction(self, pc_max=5, plot=False):
+    def pld_correction(self, pc_max=5, extra_vectors=None, plot=False):
         """Apply PLD correction using the first `pc_max` principal components.
 
         Parameters
         ----------
         pc_max : int, optional
             Number of PCA components to include in the PLD fit (default 5).
+        extra_vectors : ndarray or None, optional
+            Additional vectors to include in the PLD fit (shape: n_extra, n_frames).
+            If provided, these will be appended to the PCA basis before fitting.
+            Default is ``None`` (no extra vectors).
         plot : bool, optional
             If ``True``, produce a diagnostic plot comparing the raw and
             PLD-predicted flux (default ``False``).
@@ -2945,7 +2949,20 @@ class ApPhoto(object):
         axs : ndarray or None
             Axes of the diagnostic figure if produced, otherwise ``None``.
         """
-        X = np.vstack(( np.ones(len(self.Psum)), self.PCA[0:pc_max,:] ))
+        if extra_vectors is not None:
+            # Ensure extra_vectors has the expected dimensionality (2D: n_extra, n_frames)
+            extra_vectors = np.asarray(extra_vectors)
+            if extra_vectors.ndim == 1:
+                # Interpret a 1D array as a single extra vector
+                extra_vectors = extra_vectors.reshape(1, -1)
+            elif extra_vectors.ndim != 2:
+                raise ValueError("extra_vectors must be a 1D or 2D array-like object.")
+            
+            if extra_vectors.shape[1] != self.PCA.shape[1]:
+                raise ValueError("extra_vectors should have the same number of columns (frames) as PCA.")
+            X = np.vstack([ np.ones(len(self.Psum)), self.PCA[0:pc_max,:], extra_vectors ])
+        else:
+            X = np.vstack([ np.ones(len(self.Psum)), self.PCA[0:pc_max,:] ])
         
         # Fit:
         result = np.linalg.lstsq(X.T, self.Psum, rcond=None)
