@@ -178,12 +178,14 @@ class CHEOPSData(object):
             Us1.append(us1)
         # Normalising flux
         flx, flxe = flx/np.median(flx), flxe/np.median(flx)
+        # Finally, sorting the data according to time
+        idx_sort = np.argsort(tim)
         data = {}
-        data['TIME'], data['FLUX'], data['FLUX_ERR'] = tim, flx, flxe
-        data['ROLL'], data['XC'], data['YC'], data['BG'] = roll, xc, yc, bg
-        data['TF2'] = tf2
+        data['TIME'], data['FLUX'], data['FLUX_ERR'] = tim[idx_sort], flx[idx_sort], flxe[idx_sort]
+        data['ROLL'], data['XC'], data['YC'], data['BG'] = roll[idx_sort], xc[idx_sort], yc[idx_sort], bg[idx_sort]
+        data['TF2'] = tf2[idx_sort]
         for i in range(len(Us_n)):
-            data[Us_n[i]] = Us1[i]
+            data[Us_n[i]] = Us1[i][idx_sort]
         return data
     
     def get_drp_lightcurves(self, pout=os.getcwd(), load=False, save=False, aperture='default', visit_nos=None, filekey=None, bkg_clip=20):
