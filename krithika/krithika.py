@@ -4985,7 +4985,7 @@ class InvertCowanAgolPC(object):
 
         # Now, let's calculate the fp/f* map distribution
         fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
-        for integration in tqdm( range( len(self.E) ) ):
+        for integration in range( len(self.E) ):
             J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
                                            ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
             for th in range(self.ntheta):
@@ -4998,6 +4998,8 @@ class InvertCowanAgolPC(object):
         temp_map_path = Path(self.pout + '/Temperature_map.npy')
 
         if temp_map_path.exists():
+            print('>>> --- The temperature map distribution file already exists...')
+            print('        Loading it...')
             self.temp_map = np.load(self.pout + '/Temperature_map.npy')
         else:
             
@@ -5064,14 +5066,14 @@ class InvertCowanAgolPC(object):
         # Simply load the file if it already exists
         temp_map_path = Path(self.pout + '/Median_Temperature_map.npy')
         if temp_map_path.exists():
-            print('>>> --- The temperature map file already exists...')
+            print('>>> --- The median temperature map file already exists...')
             print('        Loading it...')
             temp_map_median = np.load(temp_map_path)
 
         else:
             # Now, let's calculate the fp/f* map distribution
             fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
-            for integration in tqdm( range( len(self.E) ) ):
+            for integration in range( len(self.E) ):
                 J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
                                                ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
                 for th in range(self.ntheta):
@@ -5205,7 +5207,7 @@ class InvertCowanAgolPC(object):
         else:
             # Now, let's calculate the fp/f* map distribution along the equator (theta=0)
             fpfs_equatorial = np.zeros( (len(self.E), self.nphi) )
-            for integration in tqdm( range( len(self.E) ) ):
+            for integration in range( len(self.E) ):
                 J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
                                                ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
                 fpfs_equatorial[integration, :] = np.sin(np.pi/2) * J_phi * 0.75
@@ -5349,7 +5351,7 @@ class InvertCowanAgolPC(object):
         """
         # Computing the Fp/F* (i.e., I(phi, theta) ) map
         I_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
-        for integration in tqdm( range( len(self.E) ) ):
+        for integration in range( len(self.E) ):
             fpfs_ph = self.A0[integration] + (self.A1[integration] * np.cos(self.phi_ang)) + (self.B1[integration] * np.sin(self.phi_ang))+\
                                              (self.A2[integration] * np.cos(2*self.phi_ang)) + (self.B2[integration] * np.sin(2*self.phi_ang))
             for th in range(self.ntheta):
@@ -5436,7 +5438,7 @@ class InvertCowanAgolPC(object):
         fl_pl_total = trapz2d( temp_map[...,None]**4 * np.sin(theta2d[...,None]), self.phi_ang, self.theta_ang + np.pi/2 )[0]
 
         # Computing the flux from star
-        fl_star = np.pi * (self.teff_star ** 4)
+        fl_star = np.pi * (self.teff_star.value ** 4)
 
         # Computing the Bond albedo
         A_Bond = 1 - ( (a_by_Rst**2) * fl_pl_total / fl_star)
@@ -5621,7 +5623,7 @@ class InvertCowanAgolPC(object):
         idx1 = self.trans_fun > 0.
 
         # Power received
-        fl_star = planck_func(lam=self.wav_star, temp=self.teff_star * u.K)
+        fl_star = planck_func(lam=self.wav_star, temp=self.teff_star)
         stellar_flux = np.trapz( y=fl_star, x=self.wav_star )
         power_received = np.pi * ( (rprs * rst)**2 ) * np.pi * ( 1 / a_by_Rst**2 ) * stellar_flux
 
@@ -5788,7 +5790,7 @@ class InvertCowanAgolPC(object):
 
         # Now, let's calculate the fp/f* map distribution
         fpfs_map = np.zeros( (len(self.E), self.nphi, self.ntheta) )
-        for integration in tqdm( range( len(self.E) ) ):
+        for integration in range( len(self.E) ):
             J_phi = self.A0[integration] + ( self.A1[integration] * np.cos(self.phi_ang) ) + ( self.B1[integration] * np.sin(self.phi_ang) )+\
                                            ( self.A2[integration] * np.cos(2*self.phi_ang) ) + ( self.B2[integration] * np.sin(2*self.phi_ang) )
             for th in range(self.ntheta):
@@ -5796,6 +5798,8 @@ class InvertCowanAgolPC(object):
 
         if np.isscalar(a_by_Rst):
             a_by_Rst_val = a_by_Rst * np.ones(fpfs_map.shape[0])
+        else:
+            a_by_Rst_val = np.random.choice(a_by_Rst, size=fpfs_map.shape[0], replace=False)
 
         # Now, we will compute the Bond albedo and heat re-distribution efficiency for each fp/f* map in the distribution
         A_Bond_all = np.zeros( fpfs_map.shape[0] )
@@ -5813,7 +5817,7 @@ class InvertCowanAgolPC(object):
 
         return A_Bond_all, eps_kelp_all, eps_keating_all
     
-    def albedo_from_kempton23(self, a_by_Rst, teq):
+    def albedo_from_kempton23(self, a_by_Rst, rst, teq):
         """Compute Bond albedo using Kempton et al. (2023) method across posteriors.
 
         Calculates Bond albedo for each posterior sample using the energy-balance
@@ -5825,7 +5829,10 @@ class InvertCowanAgolPC(object):
         a_by_Rst : float or ndarray
             Semi-major axis in units of stellar radius (a/R_*). If scalar,
             same value used for all samples; if array, sampled for each.
-        teq : float or ndarray
+        rst : float or ndarray (must be astropy.units.Quantity)
+            Stellar radius in units of solar radius (R_*). If scalar,
+            same value used for all samples; if array, sampled for each.
+        teq : float or ndarray (must be astropy.units.Quantity)
             Equilibrium temperature of the planet in Kelvin. If scalar,
             same value used for all samples; if array, sampled for each.
 
@@ -5838,7 +5845,7 @@ class InvertCowanAgolPC(object):
         Notes
         -----
         - Uses :meth:`_albedo_kempton23` for computation per sample.
-        - Requires ``self.rst`` (stellar radius) to be set on the instance.
+        - Requires ``rst`` (stellar radius) to be provided as an argument.
         - Prints posterior median and 68% credible intervals.
 
         References
@@ -5849,15 +5856,16 @@ class InvertCowanAgolPC(object):
         Examples
         --------
         >>> a_by_rst = 10.0
-        >>> teq = 1500  # Kelvin
-        >>> A_Bond = invert.albedo_from_kempton23(a_by_rst, teq)
+        >>> rst = 1.0 * u.R_sun  # Solar radius
+        >>> teq = 1500 * u.K  # Kelvin
+        >>> A_Bond = invert.albedo_from_kempton23(a_by_rst, rst, teq)
         >>> print(f"Bond albedo: {np.median(A_Bond):.3f}")
         """
         # This function calculates the Bond albedo using the method from Kempton et al. (2023)
 
         # First, we need to calculate the occultation depth map itself
         fpfs_map = np.zeros( (len(self.E), self.nphi) )
-        for integration in tqdm( range( len(self.E) ) ):
+        for integration in range( len(self.E) ):
             J_phi = self.A0[integration] + (self.A1[integration] * np.cos(self.phi_ang)) + (self.B1[integration] * np.sin(self.phi_ang))+\
                                              (self.A2[integration] * np.cos(2*self.phi_ang)) + (self.B2[integration] * np.sin(2*self.phi_ang))
             fpfs_map[integration, :] = np.sin(np.pi/2) * J_phi * 0.75
@@ -5866,15 +5874,26 @@ class InvertCowanAgolPC(object):
 
         if np.isscalar(a_by_Rst):
             a_by_Rst_val = a_by_Rst * np.ones(fpfs_map.shape[0])
+        else:
+            a_by_Rst_val = np.random.choice(a_by_Rst, size=fpfs_map.shape[0], replace=False)
         
-        if np.isscalar(teq):
+        if np.isscalar(teq) or np.isscalar(teq.value):
             teq_val = teq * np.ones(fpfs_map.shape[0])
+        else:
+            teq_val = np.random.choice(teq, size=fpfs_map.shape[0], replace=False) * u.K
 
         if np.isscalar(self.rprs):
             rprs_arr = np.full(fpfs_map.shape, float(self.rprs))
+        else:
+            rprs_arr = np.random.choice(self.rprs, size=fpfs_map.shape[0], replace=False)
+
+        if np.isscalar(rst) or np.isscalar(rst.value):
+            rst = rst * np.ones(fpfs_map.shape[0])
+        else:
+            rst = np.random.choice(rst, size=fpfs_map.shape[0], replace=False) * u.R_sun
 
         for i in tqdm(range(fpfs_map.shape[0])):
-            A_Bond_all[i] = self._albedo_kempton23(fpfs_phs=fpfs_map[i,:], rst=self.rst, a_by_Rst=a_by_Rst_val[i], teq=teq_val[i], rprs=rprs_arr[i])
+            A_Bond_all[i] = self._albedo_kempton23(fpfs_phs=fpfs_map[i,:], rst=rst[i], a_by_Rst=a_by_Rst_val[i], teq=teq_val[i], rprs=rprs_arr[i])
 
         print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
 
