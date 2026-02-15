@@ -690,8 +690,8 @@ class julietPlots(object):
 
             # Top panel
             ax1 = plt.subplot(gs[0])
-            ax1.errorbar(tim_ins, fl_ins, yerr=fle_ins, fmt='.', color='dodgerblue')#, alpha=0.3)
-            ax1.plot(tim_ins, full_model, c='navy', lw=2.5, zorder=50)
+            ax1.errorbar(tim_ins, fl_ins, yerr=fle_ins, fmt='.', elinewidth=0.5, markersize=1.5, color='dodgerblue')#, alpha=0.3)
+            ax1.plot(tim_ins, full_model, c='navy', lw=2, zorder=50)
             if quantile_models:
                 ax1.fill_between(x=tim_ins, y1=lo_68CI, y2=up_68CI, color='orangered', alpha=0.5, zorder=25)
             else:
@@ -705,7 +705,7 @@ class julietPlots(object):
 
             # Bottom panel
             ax2 = plt.subplot(gs[1])
-            ax2.errorbar(tim_ins, (fl_ins-full_model)*1e6, yerr=fle_ins*1e6, fmt='.', color='dodgerblue')#, alpha=0.3)
+            ax2.errorbar(tim_ins, (fl_ins-full_model)*1e6, yerr=fle_ins*1e6, fmt='.', elinewidth=0.5, markersize=1.5, color='dodgerblue')#, alpha=0.3)
             ax2.axhline(y=0.0, c='black', ls='--', zorder=100)
             ax2.set_ylabel('Residuals [ppm]')
             ax2.set_xlabel('Time [BJD]')
