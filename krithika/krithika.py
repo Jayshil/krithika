@@ -1182,7 +1182,7 @@ class julietPlots(object):
             else:
                 ppt = 1.
             
-            ax1.errorbar(phs, detrend_data*ppt, fmt='.', alpha=0.25, color='dodgerblue', zorder=1)
+            ax1.errorbar(phs, detrend_data*ppt, fmt='.', elinewidth=0.5, markersize=1.5, alpha=0.5, color='dodgerblue', zorder=1)
             if (not one_plot) or highres:
                 ## if we are making one-plot, we can plot the detrended model out of loop
                 ax1.plot(phs_model, detrend_model*ppt, color='navy', lw=2.5, zorder=50)
@@ -1211,7 +1211,7 @@ class julietPlots(object):
             # -------------------------------------------
             #        Bottom left: transit residuals
             # -------------------------------------------
-            ax2.errorbar(phs, residuals*ppt*1e6, fmt='.', alpha=0.25, color='dodgerblue', zorder=1)
+            ax2.errorbar(phs, residuals*ppt*1e6, fmt='.', elinewidth=0.5, markersize=1.5, alpha=0.5, color='dodgerblue', zorder=1)
             ax2.axhline(y=0., ls='--', color='k', zorder=50)
 
             # Limits (x-limit same as the top axis; for y-lim, we will set 3-sigma from median)
@@ -1264,7 +1264,7 @@ class julietPlots(object):
                 # -------------------------------------------
                 #         Top right: phase curve
                 # -------------------------------------------
-                ax3.errorbar(phs, detrend_data, fmt='.', alpha=0.25, color='dodgerblue', zorder=1)
+                ax3.errorbar(phs, detrend_data, fmt='.', elinewidth=0.5, markersize=1.5, alpha=0.5, color='dodgerblue', zorder=1)
                 if (not one_plot) or highres:
                     ## If we are making one plot, then we can take this outside of the loop
                     ax3.plot(phs_model, detrend_model, color='navy', lw=2.5, zorder=50)
@@ -1287,7 +1287,7 @@ class julietPlots(object):
                 # -------------------------------------------
                 #     Bottom right: phase curve residuals
                 # -------------------------------------------
-                ax4.errorbar(phs, residuals*1e6, fmt='.', alpha=0.25, color='dodgerblue', zorder=1)
+                ax4.errorbar(phs, residuals*1e6, fmt='.', elinewidth=0.5, markersize=1.5, alpha=0.5, color='dodgerblue', zorder=1)
                 ax4.axhline(y=0., ls='--', color='k', zorder=10)
 
                 # Limits
