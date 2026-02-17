@@ -1720,7 +1720,7 @@ class julietPlots(object):
 
         return fig
     
-    def plot_gp(self, instruments=None, highres=False, one_plot=False, figsize=(15/1.5, 6/1.5), pycheops_binning=False, xlabel='GP regressor', robust_errors=False, parameter_vector=None, nos_bin=20):
+    def plot_gp(self, instruments=None, highres=False, one_plot=False, figsize=(16/1.5, 9/1.5), pycheops_binning=False, xlabel='GP regressor', robust_errors=False, plot_errorbars=False, parameter_vector=None, nos_bin=20):
         """Plot the Gaussian Process component(s) from the fitted `juliet` model.
 
         This routine computes and plots the GP model (and binned data)
@@ -1740,7 +1740,7 @@ class julietPlots(object):
             return a single ``(fig, axs)``. If ``False``, return lists of
             figures and axes (one per instrument). Default ``False``.
         figsize : tuple, optional
-            Figure size passed to ``matplotlib``. Default ``(15/1.5, 6/1.5)``.
+            Figure size passed to ``matplotlib``. Default ``(16/1.5, 9/1.5)``.
         pycheops_binning : bool, optional
             Use ``pycheops`` produced binning when set to ``True``.
             Default ``False``.
@@ -1749,6 +1749,8 @@ class julietPlots(object):
         robust_errors : bool, optional
             If ``True``, compute GP uncertainties using
             ``compute_gp_model`` instead of using ``juliet`` precomputed errors.
+        plot_errorbars : bool, optional
+            If ``True``, plot error bars on the GP data points. Default ``False``.
         parameter_vector : array-like or None, optional
             If provided, passed to the GP parameter setter before computing
             predictions (useful for evaluating GP at different parameter
@@ -1862,7 +1864,9 @@ class julietPlots(object):
                 fig, axs = plt.subplots(figsize=figsize)
 
             # Plotting the "raw" data
-            axs.errorbar(self.dataset.GP_lc_arguments[instruments[i]][:,0], self.gp_data[instruments[i]]*1e6, fmt='.', alpha=0.1, color='dodgerblue', zorder=1)
+            errorbars = self.detrended_errs[instruments[i]]*1e6 if plot_errorbars else None
+            alp = 0.3 if plot_errorbars else 0.8
+            axs.errorbar(self.dataset.GP_lc_arguments[instruments[i]][:,0], self.gp_data[instruments[i]]*1e6, yerr=errorbars, fmt='.', elinewidth=0.3, markersize=1.5, alpha=alp, color='dodgerblue', zorder=1)
             
             # ------------------------------------------
             #    Now, we can plot the bin data and
@@ -1876,7 +1880,7 @@ class julietPlots(object):
                 # First bin-data
                 if not pycheops_binning:
                     nbin = int( len( self.gp_data[instruments[i]] ) / nos_bin )
-                    bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=self.dataset.GP_lc_arguments[instruments[i]][:,0], y=self.gp_data[instruments[i]]*1e6, n_bin=nbin)
+                    bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=self.dataset.GP_lc_arguments[instruments[i]][:,0], y=self.gp_data[instruments[i]]*1e6, yerr=self.detrended_errs[instruments[i]]*1e6, n_bin=nbin)
 
                 else:
                     binwid = np.ptp( self.dataset.GP_lc_arguments[instruments[i]][:,0] ) / nos_bin
@@ -1886,7 +1890,7 @@ class julietPlots(object):
                 # And now models
                 ## If we don't need highres model, we can simply plot what we have
                 ## Else, we need to create highres model first
-                axs.plot(gp_model_regressor[instruments[i]], gp_med_model[instruments[i]]*1e6, color='navy', lw=2.5, zorder=50)
+                axs.plot(gp_model_regressor[instruments[i]], gp_med_model[instruments[i]]*1e6, color='navy', lw=1.5, zorder=50)
                 
                 # If we are making one plot per instrument (i.e., one_plot=False), we can simply plot quantile models right here
                 axs.fill_between(gp_model_regressor[instruments[i]], y1=gp_lo68[instruments[i]]*1e6, y2=gp_up68[instruments[i]]*1e6, color='orangered', alpha=0.5, zorder=25)
@@ -1896,7 +1900,7 @@ class julietPlots(object):
                 axs.set_ylabel('Relative flux [ppm]')
 
                 axs.set_xlim([ np.min(self.dataset.GP_lc_arguments[instruments[i]][:,0]), np.max(self.dataset.GP_lc_arguments[instruments[i]][:,0]) ])
-                axs.set_ylim([ np.nanmedian(bin_fl)-5*pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*pipe_mad(bin_fl) ])
+                axs.set_ylim([ np.nanmedian(bin_fl)-10*pipe_mad(bin_fl), np.nanmedian(bin_fl)+10*pipe_mad(bin_fl) ])
 
                 # Saving fig, axs to the list
                 fig_all.append(fig)
@@ -1922,7 +1926,7 @@ class julietPlots(object):
             # First, bin data
             if not pycheops_binning:
                 nbin = int( len( bin_gp_reg ) / nos_bin / len(instruments) )
-                bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=bin_gp_reg, y=bin_resids, n_bin=nbin)
+                bin_tim, bin_fl, bin_fle = juliet.utils.bin_data(x=bin_gp_reg, y=bin_resids, yerr=bin_errors, n_bin=nbin)
 
             else:
                 binwid = np.ptp( bin_gp_reg ) / nos_bin / len(instruments)
@@ -1941,13 +1945,13 @@ class julietPlots(object):
                                                      resids=bin_resids[idx_gp_reg_sort]/1e6, errors=bin_errors[idx_gp_reg_sort]/1e6,\
                                                      parameter_vector=parameter_vector)
                 
-                axs.plot(pred_time, gp_quantiles[0,:]*1e6, color='navy', lw=2.5, zorder=50)
+                axs.plot(pred_time, gp_quantiles[0,:]*1e6, color='navy', lw=1.5, zorder=50)
                 axs.fill_between(pred_time, y1=gp_quantiles[2,:]*1e6, y2=gp_quantiles[1,:]*1e6, color='orangered', alpha=0.5, zorder=25)
 
             else:
                 ## First, sorting according to regressors, and then plotting the full model
                 idx_reg_sort = np.argsort(all_regressors_for_plotting)
-                axs.plot(all_regressors_for_plotting[idx_reg_sort], all_models_for_plotting[idx_reg_sort], color='navy', lw=2.5, zorder=50)
+                axs.plot(all_regressors_for_plotting[idx_reg_sort], all_models_for_plotting[idx_reg_sort], color='navy', lw=1.5, zorder=50)
                 
                 # We can plot qunatile models here, if highres=False
                 axs.fill_between(all_regressors_for_plotting[idx_reg_sort], y1=all_l68_mods_plotting[idx_reg_sort], y2=all_u68_mods_plotting[idx_reg_sort], color='orangered', alpha=0.5, zorder=25)
@@ -1957,7 +1961,7 @@ class julietPlots(object):
             axs.set_ylabel('Relative flux [ppm]')
 
             axs.set_xlim([ np.min(bin_gp_reg), np.max(bin_gp_reg) ])
-            axs.set_ylim([ np.nanmedian(bin_fl)-5*pipe_mad(bin_fl), np.nanmedian(bin_fl)+5*pipe_mad(bin_fl) ])
+            axs.set_ylim([ np.nanmedian(bin_fl)-10*pipe_mad(bin_fl), np.nanmedian(bin_fl)+10*pipe_mad(bin_fl) ])
 
         if one_plot:
             return fig, axs
