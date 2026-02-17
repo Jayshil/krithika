@@ -215,6 +215,58 @@ Finally, using ``julietPlots`` class, we can plot light curve models, phase fold
 
    data.plot_corner(planet_only=False, save=True)
 
+Inverting Cowan & Agol (2008) phase curve model
+-----------------------------------------------
+.. code-block:: python
+
+   import numpy as np
+   from astropy import units as u
+   from krithika import InvertCowanAgolPC
+
+   # Load posterior samples from eclipse depths and phase-curve fitting
+   E = np.random.normal(0.01, 0.001, 1000)  # Eclipse depths (F_p/F_*)
+   C1 = np.random.normal(0.005, 0.0005, 1000)  # Phase-curve cosine (first harmonic)
+   D1 = np.random.normal(0.002, 0.0002, 1000)  # Phase-curve sine (first harmonic)
+   C2 = np.random.normal(0.001, 0.0001, 1000)  # Phase-curve cosine (second harmonic)
+   D2 = np.random.normal(0.0005, 0.00005, 1000)  # Phase-curve sine (second harmonic)
+   rprs = 0.1  # Planet-to-star radius ratio
+
+   # Define instrument bandpass
+   bandpass = {
+      'WAVE': np.linspace(0.3, 5.0, 100) * u.um,
+      'RESPONSE': np.ones(100)
+   }
+
+   # Create inversion object
+   invert = InvertCowanAgolPC(
+      E=E, C1=C1, D1=D1, C2=C2, D2=D2,
+      rprs=rprs,
+      bandpass=bandpass,
+      teff_star=5800 * u.K,
+      pout="./phase_curve_results"
+   )
+
+   ## Day/night brightness temperatures
+   T_day, T_night = invert.TdayTnight()
+
+   ## Temperature maps across posterior samples
+   temp_maps = invert.temperature_map_distribution(nsamples=2000)
+
+   ## Median temperature map
+   fig, ax = invert.median_temperature_map(plot=True, cmap='plasma')
+   plt.show()
+
+   ## Equatorial temperature profile
+   fig, ax = invert.equatorial_temp_map(plot=True, nsamples=2000)
+   plt.show()
+
+   ## Bond albedo and heat redistribution efficiency
+   a_by_Rst = 10.0  # Semi-major axis in units of stellar radius
+   A_B, eps_kelp, _, _, _ = invert.albedo_eps_from_temp_map(a_by_Rst)
+
+   ## Phase offsets (hotspot shift and phase shift)
+   phi_off, phi_off_err, phase_off, phase_off_err = invert.phase_offsets(method='root')
+
 Modules & Classes
 =================
 
