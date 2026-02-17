@@ -17,7 +17,7 @@ from tqdm import tqdm
 #from .plotstyles import *
 import pickle
 import juliet
-from utils import *
+from .utils import *
 import warnings
 import os
 
