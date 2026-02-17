@@ -743,3 +743,27 @@ def trapz2d(z, x, y):
         np.sum(z[0, 1:n, :], axis=0) + np.sum(z[m, 1:n, :], axis=0))
     s3 = np.sum(np.sum(z[1:m, 1:n, :], axis=0), axis=0)
     return dx * dy * (s1 + 2 * s2 + 4 * s3) / 4
+
+def autocorrelation_function(chain):
+    """Compute the autocorrelation function for a given chain and lags.
+
+    Parameters
+    ----------
+    chain : ndarray
+        Array containing the chain values.
+
+    Returns
+    -------
+    rhos : ndarray
+        Autocorrelation values for each lag.
+    """
+    mu, variance = np.mean(chain), np.var(chain)
+    N = len(chain)
+    
+    rhos = np.zeros( len(chain) )
+    for i in range(N):
+        X0 = chain[:N-i] - mu
+        Xk = chain[i:] - mu
+        rhoi = np.sum(X0*Xk)/variance
+        rhos[i] = rhoi/(N-i)
+    return rhos
