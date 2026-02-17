@@ -2935,7 +2935,8 @@ class ApPhoto(object):
         pc_max : int, optional
             Number of PCA components to include in the PLD fit (default 5).
         extra_vectors : ndarray or None, optional
-            Additional vectors to include in the PLD fit (shape: n_extra, n_frames).
+            Additional vectors to include in the PLD fit (shape: either 1D array 
+            of length n_frames or 2D array of shape (n_extra, n_frames)).
             If provided, these will be appended to the PCA basis before fitting.
             Default is ``None`` (no extra vectors).
         plot : bool, optional
