@@ -2919,7 +2919,7 @@ class ApPhoto(object):
         """
         fig, axs = plt.subplots(nrows=int(nmax), ncols=1, figsize=(15,10), sharex=True)
         for i in range(int(nmax)):
-            axs[i].plot(self.times - self.times[0], self.PCA[i,:], 'k-')
+            axs[i].plot(self.times - self.times[0], self.PCA[i,:], 'k-', lw=1.)
             axs[i].set_ylabel('PC ' + str(i+1))
             med, std = np.nanmedian(self.PCA[i,:]), mad_std(self.PCA[i,:])
             axs[i].set_ylim([med-4*std, med+4*std])
@@ -3057,7 +3057,7 @@ class ApPhoto(object):
             axs.axvline(n_pc_of_min_scat, color='dimgrey', ls='--', lw=1.)
             
             axs.set_xlabel('Number of PCs included')
-            axs.set_ylabel('Median Absolute Deviation')
+            axs.set_ylabel('Median Absolute Deviation [ppm]')
 
             axs.set_xlim([ np.min(pcs_to_include), np.max(pcs_to_include) ])
             plt.grid()
@@ -5922,3 +5922,281 @@ class InvertCowanAgolPC(object):
         print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
 
         return A_Bond_all
+
+
+class SelectLinDetrend(object):
+    # This class is used to select the best linear detrending model for a light curve fitting
+    def __init__(self, time, flux, flux_err, priors, linear_regressors, gp_regressors=None, roll_degree=None, roll=None, noise_method='astropy', juliet_fit_kwargs={}, nthreads=multiprocessing.cpu_count(), pout=os.getcwd() ):
+        # Time, flux, and flux_err are the light curve data. All of them are dict with keys of instrument name.
+        self.time = time
+        self.flux = flux
+        self.flux_err = flux_err
+
+        # Extracting an instrument list
+        self.instruments = list( self.time.keys() )
+
+        # Priors; it is a function with only keyword is the name of the instrument.
+        # It should return a tuple of lists, where the first list is the list of parameter names, second is the list of distributions, and the third is the hyperparameters for the distributions.
+        self.priors = priors
+
+        # linear_regressors is a dict where the keys are the names of the instruments, and values are again dict where keys
+        # now are the name of the linear regressors (e.g., 'time', 'time^2', 'background', etc.) and values are numpy arrays of 
+        # the same length as time, flux, and flux_err. These arrays represent the values of the linear regressors at each time point.
+        self.linear_regressors = linear_regressors
+
+        # GP_regressors is a dict where the keys are the names of the instruments
+        self.GP_regressors = gp_regressors
+
+        # The roll_degree parameter indicates the maximum degree of the roll angle Fourier series to include in the linear model.
+        self.roll_degree = roll_degree
+
+        # If we are going to include the roll angle as a linear regressor, then we need to have the roll angle values for each time point.
+        # It should be a dict where the keys are the names of the instruments and values are numpy arrays of the same length as 
+        # time, flux, and flux_err. These arrays represent the roll angle values at each time point.
+        self.roll = roll
+
+        if self.roll_degree is not None and self.roll is not None:
+            # This means that we will be including the roll angle as a linear regressor, so we need to create the regressors for the roll angle modulation and include them in self.linear_regressors.
+            # Let's adjust the self.linear_regressors to include the roll angle regressors if GP_roll is False
+            self._roll_model_sine()
+        elif ( self.roll_degree is None) or (self.roll is None):
+            # This means that the user wants to include Roll angles as linear regressors but they forgot to provide either the roll_degree or the roll angle values. We will raise an error in this case.
+            if (self.roll_degree is not None) and (self.roll is None):
+                raise ValueError("roll_degree is provided but roll angle values are not provided. Please provide the roll angle values or set roll_degree to None.")
+            elif (self.roll_degree is None) and (self.roll is not None):
+                raise ValueError("roll angle values are provided but roll_degree is not provided. Please provide the roll_degree or set roll to None.")
+        else:
+            # Both roll_degree and roll are None, which means that we will be including the roll angle as a Gaussian process regressor, so we don't need to include it as a linear regressor.
+            # We assume that the use have alreadey included the roll angle as a GP regressor in self.GP_regressors, so we don't need to do anything here.
+            # Just a sanity check to make sure that the roll angle is included in the GP regressors.
+            if self.GP_regressors is None:
+                print("GP_regressors must be provided if roll angle modulation is desired to be fitted with a GP.")
+
+        # Noise method to use for calculating the scatter in residuals
+        if noise_method == 'astropy':
+            self.noise_func = mad_std
+        elif noise_method == 'std':
+            self.noise_func = np.std
+        elif noise_method == 'pipe':
+            self.noise_func = pipe_mad
+        else:
+            raise ValueError("Invalid noise method. Please choose from 'astropy', 'std', or 'pipe'.")
+
+        # Finally, we will save any extra juliet fit kwargs to be used in the juliet fitting later.
+        # This argument will be provided to juliet.fit() function when we fit the model to the data.
+        self.juliet_fit_kwargs = juliet_fit_kwargs
+
+        # Cores to use for juliet fitting
+        self.nthreads = nthreads
+
+        # Output directory to save the juliet fit results
+        self.pout = pout
+
+    def _roll_model_sine(self):
+        # This helper function creates the regressors for roll angle modulation for maximum degree of roll_degree. 
+        # Eventually the regressors are saved in self.linear_regressors with keys 'ROLL_SIN_1', 'ROLL_COS_1', 'ROLL_SIN_2', 'ROLL_COS_2', ..., 'ROLL_SIN_roll_degree', 'ROLL_COS_roll_degree'.
+        for ins in range( len(self.instruments) ):
+            for i in range(self.roll_degree):
+                self.linear_regressors[self.instruments[ins]][f'ROLL_SIN_{i+1}'] = np.sin( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
+                self.linear_regressors[self.instruments[ins]][f'ROLL_COS_{i+1}'] = np.cos( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
+
+    def _fit_model(self, lin_reg, out_dir):
+        # This helper function fits the total model to the data using juliet.
+
+        # lin_reg is a dict with instrument names as keys. Each key contains another dict where the keys are the names of the linear regressors 
+        # and values are numpy arrays of the same length as time, flux, and flux_err. 
+        # These arrays represent the values of the linear regressors at each time point for that instrument.
+
+        # If lin_reg is None, then it means that we are fitting a model with no linear regressors.
+
+        # First, creating data dicts for juliet
+        ## We want everything to be sorted according to GP regressors -- so, keeping that in min
+        tim, fl, fle = {}, {}, {}
+        lin_pars, gp_pars = {}, {}
+        for ins in range( len(self.instruments) ):
+            if self.GP_regressors[ self.instruments[ins] ] is not None:
+                ## First, accessing the GP regressors for this instrument
+                gp_reg = self.GP_regressors[ self.instruments[ins] ]
+                idx_gpreg = np.argsort( gp_reg ) ## We will use this array to sort everything according to the GP regressors
+
+            else:
+                ## If there are no GP regressors, then we can just use the original time array for sorting (which is the same as not sorting at all)
+                idx_gpreg = np.arange( len(self.time[self.instruments[ins]]) )
+
+            ## Now saving the data
+            tim[self.instruments[ins]] = self.time[self.instruments[ins]][idx_gpreg]
+            fl[self.instruments[ins]] = self.flux[self.instruments[ins]][idx_gpreg]
+            fle[self.instruments[ins]] = self.flux_err[self.instruments[ins]][idx_gpreg]
+
+            ## GP regressors
+            if self.GP_regressors[ self.instruments[ins] ] is not None:
+                gp_pars[self.instruments[ins]] = gp_reg[idx_gpreg]
+            else:
+                gp_pars[self.instruments[ins]] = None
+
+            ## Linear regressors
+            if lin_reg[self.instruments[ins]] is not None:
+                lin12 = []
+                for key in lin_reg[self.instruments[ins]].keys():
+                    lin12.append( lin_reg[self.instruments[ins]][key][idx_gpreg] )
+                lin_pars[self.instruments[ins]] = np.transpose( np.vstack( lin12 ) )
+            else:
+                lin_pars[self.instruments[ins]] = None
+
+        # If every keys in lin_pars is None, then we can just set lin_pars to None
+        if all( value is None for value in lin_pars.values() ):
+            lin_pars = None
+        
+        if all( value is None for value in gp_pars.values() ):
+            gp_pars = None
+        else:
+            # If some of the keys have None in them we just remove that key from the gp_pars dict
+            gp_pars = { key: value for key, value in gp_pars.items() if value is not None }
+
+        # Now, it's time to design priors
+        par_P, dist_P, hyper_P = [], [], []
+        par_lin, dist_lin, hyper_lin = [], [], []
+        for ins in range( len(self.instruments) ):
+            par_P_ins, dist_P_ins, hyper_P_ins = self.priors( instrument=self.instruments[ins] )
+            par_P += par_P_ins
+            dist_P += dist_P_ins
+            hyper_P += hyper_P_ins
+
+            par_P = par_P + ['mdilution_' + self.instruments[ins], 'mflux_' + self.instruments[ins], 'sigma_w_' + self.instruments[ins]]
+            dist_P = dist_P + ['fixed', 'normal', 'loguniform']
+            hyper_P = hyper_P + [ 1.0, [0., 0.1], [0.1, 1e4] ]
+
+            ## Linear regressor priors
+            if lin_pars is not None and lin_pars[self.instruments[ins]] is not None:
+                for pc in range( lin_pars[self.instruments[ins]].shape[1] ):
+                    par_lin += ['theta' + str(pc) + '_' + self.instruments[ins]]
+                    dist_lin += ['uniform']
+                    hyper_lin += [ [-1, 1] ]
+
+        # Total priors
+        par_tot = par_P + par_lin
+        dist_tot = dist_P + dist_lin
+        hyper_tot = hyper_P + hyper_lin
+
+        # juliet priors
+        priors = juliet.utils.generate_priors(par_tot, dist_tot, hyper_tot)
+
+        # Actual juliet fitting
+        data = juliet.load(priors=priors, t_lc=tim, y_lc=fl, yerr_lc=fle,\
+                           linear_regressors_lc=lin_pars, GP_regressors_lc=gp_pars,\
+                           out_folder=out_dir)
+        res = data.fit(sampler='dynamic_dynesty', **self.juliet_fit_kwargs)
+
+        # Calculating the residuals, so that I can compute the MAD
+        mads_all = []
+        for ins in range( len(self.instruments) ):
+            model_lc = res.lc.evaluate(instrument=self.instruments[ins])
+            residuals = fl[self.instruments[ins]] - model_lc
+            mads_all.append( self.noise_func(residuals) * 1e6 )
+
+        return res.posteriors['lnZ'], mads_all
+
+    def select_optimal_parameters(self):
+        """
+        Select optimal linear detrending vectors using forward selection based on
+        Bayesian evidence.
+
+        The algorithm starts with a base model that has no linear regressors and
+        iteratively adds the vector that yields the greatest improvement in log-evidence.
+        A vector is only accepted if it raises the log-evidence by at least 2 units
+        over the previous best model. The search stops when no remaining vector
+        meets this threshold.
+
+        Unique regressor names are collected across all instruments. When a regressor
+        is selected it is included for every instrument that carries it; instruments
+        that do not have that regressor are left unchanged.
+
+        Returns
+        -------
+        selected_regressors : dict
+            Dict with instrument names as keys. Each value is either a dict of
+            {regressor_name: array} for the selected regressors, or None if no
+            regressor was selected for that instrument.
+        lnZ_history : list of float
+            Log-evidence at each accepted step (index 0 is the base model).
+        scatter_history : list
+            Scatter (MAD) values at each accepted step (index 0 is the base model).
+        """
+        # Collect all unique regressor names across all instruments
+        all_regressor_names = set()
+        for ins in self.instruments:
+            all_regressor_names.update(self.linear_regressors[ins].keys())
+        remaining_names = list(all_regressor_names)
+
+        # --- Step 1: base model (no linear regressors) ---
+        lin_reg_none = {ins: None for ins in self.instruments}
+        base_out_dir = os.path.join(self.pout, 'linsel_base')
+        print("Fitting base model (no linear regressors)...")
+        base_lnZ, base_scatter = self._fit_model(lin_reg_none, base_out_dir)
+        print(f"  Base model lnZ = {base_lnZ:.2f}")
+
+        selected_names = []
+        current_lnZ   = base_lnZ
+        lnZ_history     = [base_lnZ]
+        scatter_history = [base_scatter]
+
+        # --- Step 2: forward selection ---
+        while remaining_names:
+            best_lnZ    = -np.inf
+            best_name   = None
+            best_scatter = None
+
+            for name in remaining_names:
+                candidate_names = selected_names + [name]
+
+                # Build lin_reg for this candidate set
+                lin_reg = {}
+                for ins in self.instruments:
+                    reg_dict = {
+                        reg_name: self.linear_regressors[ins][reg_name]
+                        for reg_name in candidate_names
+                        if reg_name in self.linear_regressors[ins]
+                    }
+                    lin_reg[ins] = reg_dict if reg_dict else None
+
+                out_dir = os.path.join(
+                    self.pout,
+                    'linsel_' + '_'.join(sorted(candidate_names))
+                )
+                print(f"  Testing regressor(s): {candidate_names}")
+                lnZ, scatter = self._fit_model(lin_reg, out_dir)
+                print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+
+                if lnZ > best_lnZ:
+                    best_lnZ     = lnZ
+                    best_name    = name
+                    best_scatter = scatter
+
+            # Accept only if improvement is >= 2 log-evidence units
+            if best_lnZ - current_lnZ >= 2.0:
+                print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
+                selected_names.append(best_name)
+                remaining_names.remove(best_name)
+                current_lnZ = best_lnZ
+                lnZ_history.append(best_lnZ)
+                scatter_history.append(best_scatter)
+            else:
+                print(
+                    f"  No regressor improved lnZ by >= 2 "
+                    f"(best delta = {best_lnZ - current_lnZ:.2f}). Stopping."
+                )
+                break
+
+        print(f"Selected regressors: {selected_names}")
+
+        # Build the final selected-regressors dict
+        selected_regressors = {}
+        for ins in self.instruments:
+            reg_dict = {
+                name: self.linear_regressors[ins][name]
+                for name in selected_names
+                if name in self.linear_regressors[ins]
+            }
+            selected_regressors[ins] = reg_dict if reg_dict else None
+
+        return selected_regressors, lnZ_history, scatter_history
