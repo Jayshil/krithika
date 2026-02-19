@@ -11,6 +11,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import root, fsolve
 import matplotlib
 import multiprocessing
+import concurrent.futures
 from pathlib import Path
 from glob import glob
 from tqdm import tqdm
@@ -5924,6 +5925,53 @@ class InvertCowanAgolPC(object):
         return A_Bond_all
 
 
+# ---------------------------------------------------------------------------
+# Module-level worker for SelectLinDetrend.select_optimal_parameters
+# ---------------------------------------------------------------------------
+# It lives at module scope so that concurrent.futures.ProcessPoolExecutor can
+# pickle it without ever needing to serialise the SelectLinDetrend instance
+# (which may hold un-picklable attributes such as a closure for 'priors').
+def _lindetrend_worker(worker_args):
+    (instruments, tim_s, fl_s, fle_s, gp_pars_s,
+     lin_pars, cached_priors, out_dir,
+     juliet_fit_kwargs, noise_method) = worker_args
+
+    noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad}
+    noise_func = noise_mapping[noise_method]
+
+    # Build full prior lists from cached base priors + linear regressor priors
+    par_tot, dist_tot, hyper_tot = [], [], []
+    for ins in instruments:
+        par_ins, dist_ins, hyper_ins = cached_priors[ins]
+        par_tot  += list(par_ins)  + ['mdilution_' + ins, 'mflux_' + ins, 'sigma_w_' + ins]
+        dist_tot += list(dist_ins) + ['fixed', 'normal', 'loguniform']
+        hyper_tot += list(hyper_ins) + [1.0, [0., 0.1], [0.1, 1e4]]
+        if lin_pars is not None and lin_pars.get(ins) is not None:
+            for pc in range(lin_pars[ins].shape[1]):
+                par_tot.append('theta' + str(pc) + '_' + ins)
+                dist_tot.append('uniform')
+                hyper_tot.append([-1, 1])
+
+    priors = juliet.utils.generate_priors(par_tot, dist_tot, hyper_tot)
+
+    data = juliet.load(
+        priors=priors,
+        t_lc=tim_s, y_lc=fl_s, yerr_lc=fle_s,
+        linear_regressors_lc=lin_pars,
+        GP_regressors_lc=gp_pars_s,
+        out_folder=out_dir,
+    )
+    res = data.fit(sampler='dynamic_dynesty', **juliet_fit_kwargs)
+
+    mads_all = []
+    for ins in instruments:
+        model_lc = res.lc.evaluate(instrument=ins)
+        residuals = fl_s[ins] - model_lc
+        mads_all.append(noise_func(residuals) * 1e6)
+
+    return res.posteriors['lnZ'], mads_all
+
+
 class SelectLinDetrend(object):
     # This class is used to select the best linear detrending model for a light curve fitting
     def __init__(self, time, flux, flux_err, priors, linear_regressors, gp_regressors=None, roll_degree=None, roll=None, noise_method='astropy', juliet_fit_kwargs={}, nthreads=multiprocessing.cpu_count(), pout=os.getcwd() ):
@@ -5973,14 +6021,11 @@ class SelectLinDetrend(object):
                 print("GP_regressors must be provided if roll angle modulation is desired to be fitted with a GP.")
 
         # Noise method to use for calculating the scatter in residuals
-        if noise_method == 'astropy':
-            self.noise_func = mad_std
-        elif noise_method == 'std':
-            self.noise_func = np.std
-        elif noise_method == 'pipe':
-            self.noise_func = pipe_mad
-        else:
+        noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad}
+        if noise_method not in noise_mapping:
             raise ValueError("Invalid noise method. Please choose from 'astropy', 'std', or 'pipe'.")
+        self.noise_method = noise_method          # stored as string for worker pickling
+        self.noise_func   = noise_mapping[noise_method]
 
         # Finally, we will save any extra juliet fit kwargs to be used in the juliet fitting later.
         # This argument will be provided to juliet.fit() function when we fit the model to the data.
@@ -5992,111 +6037,137 @@ class SelectLinDetrend(object):
         # Output directory to save the juliet fit results
         self.pout = pout
 
+        # Pre-compute sort indices, sorted data arrays, and cached prior values
+        # so that _fit_model and parallel workers never redo this work.
+        self._precompute()
+
+    def _precompute(self):
+        # Cache per-instrument sort indices, pre-sorted data, GP regressors, and
+        # prior data so this work is done exactly once rather than once per fit.
+        self._sort_idx = {}
+        self._tim_s    = {}
+        self._fl_s     = {}
+        self._fle_s    = {}
+        self._gp_pars_s = {}
+
+        for ins in self.instruments:
+            gp_reg = self.GP_regressors[ins] if self.GP_regressors is not None else None
+            if gp_reg is not None:
+                idx = np.argsort(gp_reg)
+                self._gp_pars_s[ins] = gp_reg[idx]
+            else:
+                idx = np.arange(len(self.time[ins]))
+                self._gp_pars_s[ins] = None
+
+            self._sort_idx[ins] = idx
+            self._tim_s[ins]    = self.time[ins][idx]
+            self._fl_s[ins]     = self.flux[ins][idx]
+            self._fle_s[ins]    = self.flux_err[ins][idx]
+
+        # Collapse gp_pars: None if all instruments lack GP regressors,
+        # otherwise keep only the instruments that have them.
+        if all(v is None for v in self._gp_pars_s.values()):
+            self._gp_pars_s_juliet = None
+        else:
+            self._gp_pars_s_juliet = {k: v for k, v in self._gp_pars_s.items() if v is not None}
+
+        # Cache prior data per instrument (lists/tuples of plain data → picklable)
+        self._cached_priors = {}
+        for ins in self.instruments:
+            self._cached_priors[ins] = self.priors(instrument=ins)
+
     def _roll_model_sine(self):
-        # This helper function creates the regressors for roll angle modulation for maximum degree of roll_degree. 
+        # This helper function creates the regressors for roll angle modulation for maximum degree of roll_degree.
         # Eventually the regressors are saved in self.linear_regressors with keys 'ROLL_SIN_1', 'ROLL_COS_1', 'ROLL_SIN_2', 'ROLL_COS_2', ..., 'ROLL_SIN_roll_degree', 'ROLL_COS_roll_degree'.
         for ins in range( len(self.instruments) ):
             for i in range(self.roll_degree):
                 self.linear_regressors[self.instruments[ins]][f'ROLL_SIN_{i+1}'] = np.sin( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
                 self.linear_regressors[self.instruments[ins]][f'ROLL_COS_{i+1}'] = np.cos( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
 
-    def _fit_model(self, lin_reg, out_dir):
-        # This helper function fits the total model to the data using juliet.
+    def _build_lin_pars(self, lin_reg):
+        """Apply cached sort indices to lin_reg and stack into juliet matrix form.
 
-        # lin_reg is a dict with instrument names as keys. Each key contains another dict where the keys are the names of the linear regressors 
-        # and values are numpy arrays of the same length as time, flux, and flux_err. 
-        # These arrays represent the values of the linear regressors at each time point for that instrument.
+        Parameters
+        ----------
+        lin_reg : dict
+            {instrument: {regressor_name: array}} or {instrument: None}
 
-        # If lin_reg is None, then it means that we are fitting a model with no linear regressors.
-
-        # First, creating data dicts for juliet
-        ## We want everything to be sorted according to GP regressors -- so, keeping that in min
-        tim, fl, fle = {}, {}, {}
-        lin_pars, gp_pars = {}, {}
-        for ins in range( len(self.instruments) ):
-            if self.GP_regressors[ self.instruments[ins] ] is not None:
-                ## First, accessing the GP regressors for this instrument
-                gp_reg = self.GP_regressors[ self.instruments[ins] ]
-                idx_gpreg = np.argsort( gp_reg ) ## We will use this array to sort everything according to the GP regressors
-
+        Returns
+        -------
+        lin_pars : dict or None
+            {instrument: 2-D ndarray (n_points x n_regressors)} ready for juliet,
+            or None if every instrument has no regressors.
+        """
+        lin_pars = {}
+        for ins in self.instruments:
+            if lin_reg[ins] is not None:
+                # Sort by GP regressor order; use sorted() for deterministic column order
+                arrs = [lin_reg[ins][k][self._sort_idx[ins]] for k in sorted(lin_reg[ins].keys())]
+                lin_pars[ins] = np.transpose(np.vstack(arrs))
             else:
-                ## If there are no GP regressors, then we can just use the original time array for sorting (which is the same as not sorting at all)
-                idx_gpreg = np.arange( len(self.time[self.instruments[ins]]) )
+                lin_pars[ins] = None
+        if all(v is None for v in lin_pars.values()):
+            return None
+        return lin_pars
 
-            ## Now saving the data
-            tim[self.instruments[ins]] = self.time[self.instruments[ins]][idx_gpreg]
-            fl[self.instruments[ins]] = self.flux[self.instruments[ins]][idx_gpreg]
-            fle[self.instruments[ins]] = self.flux_err[self.instruments[ins]][idx_gpreg]
+    def _fit_model(self, lin_reg, out_dir, nthreads=None):
+        """Fit the total model using juliet.
 
-            ## GP regressors
-            if self.GP_regressors[ self.instruments[ins] ] is not None:
-                gp_pars[self.instruments[ins]] = gp_reg[idx_gpreg]
-            else:
-                gp_pars[self.instruments[ins]] = None
+        Uses pre-sorted data and cached prior values from _precompute() so no
+        redundant sorting or prior evaluation occurs per call.
 
-            ## Linear regressors
-            if lin_reg[self.instruments[ins]] is not None:
-                lin12 = []
-                for key in lin_reg[self.instruments[ins]].keys():
-                    lin12.append( lin_reg[self.instruments[ins]][key][idx_gpreg] )
-                lin_pars[self.instruments[ins]] = np.transpose( np.vstack( lin12 ) )
-            else:
-                lin_pars[self.instruments[ins]] = None
+        Parameters
+        ----------
+        lin_reg : dict
+            {instrument: {regressor_name: array}} or {instrument: None}
+        out_dir : str
+            Output folder for juliet results.
+        nthreads : int, optional
+            Thread count passed to juliet. Defaults to self.nthreads.
 
-        # If every keys in lin_pars is None, then we can just set lin_pars to None
-        if all( value is None for value in lin_pars.values() ):
-            lin_pars = None
-        
-        if all( value is None for value in gp_pars.values() ):
-            gp_pars = None
-        else:
-            # If some of the keys have None in them we just remove that key from the gp_pars dict
-            gp_pars = { key: value for key, value in gp_pars.items() if value is not None }
+        Returns
+        -------
+        lnZ : float
+        mads_all : list of float
+        """
+        if nthreads is None:
+            nthreads = self.nthreads
 
-        # Now, it's time to design priors
-        par_P, dist_P, hyper_P = [], [], []
-        par_lin, dist_lin, hyper_lin = [], [], []
-        for ins in range( len(self.instruments) ):
-            par_P_ins, dist_P_ins, hyper_P_ins = self.priors( instrument=self.instruments[ins] )
-            par_P += par_P_ins
-            dist_P += dist_P_ins
-            hyper_P += hyper_P_ins
+        lin_pars = self._build_lin_pars(lin_reg)
 
-            par_P = par_P + ['mdilution_' + self.instruments[ins], 'mflux_' + self.instruments[ins], 'sigma_w_' + self.instruments[ins]]
-            dist_P = dist_P + ['fixed', 'normal', 'loguniform']
-            hyper_P = hyper_P + [ 1.0, [0., 0.1], [0.1, 1e4] ]
+        # Build prior lists from cached per-instrument base priors
+        par_tot, dist_tot, hyper_tot = [], [], []
+        for ins in self.instruments:
+            par_ins, dist_ins, hyper_ins = self._cached_priors[ins]
+            par_tot  += list(par_ins)  + ['mdilution_' + ins, 'mflux_' + ins, 'sigma_w_' + ins]
+            dist_tot += list(dist_ins) + ['fixed', 'normal', 'loguniform']
+            hyper_tot += list(hyper_ins) + [1.0, [0., 0.1], [0.1, 1e4]]
+            if lin_pars is not None and lin_pars.get(ins) is not None:
+                for pc in range(lin_pars[ins].shape[1]):
+                    par_tot.append('theta' + str(pc) + '_' + ins)
+                    dist_tot.append('uniform')
+                    hyper_tot.append([-1, 1])
 
-            ## Linear regressor priors
-            if lin_pars is not None and lin_pars[self.instruments[ins]] is not None:
-                for pc in range( lin_pars[self.instruments[ins]].shape[1] ):
-                    par_lin += ['theta' + str(pc) + '_' + self.instruments[ins]]
-                    dist_lin += ['uniform']
-                    hyper_lin += [ [-1, 1] ]
-
-        # Total priors
-        par_tot = par_P + par_lin
-        dist_tot = dist_P + dist_lin
-        hyper_tot = hyper_P + hyper_lin
-
-        # juliet priors
         priors = juliet.utils.generate_priors(par_tot, dist_tot, hyper_tot)
 
-        # Actual juliet fitting
-        data = juliet.load(priors=priors, t_lc=tim, y_lc=fl, yerr_lc=fle,\
-                           linear_regressors_lc=lin_pars, GP_regressors_lc=gp_pars,\
-                           out_folder=out_dir)
-        res = data.fit(sampler='dynamic_dynesty', **self.juliet_fit_kwargs)
+        data = juliet.load(
+            priors=priors,
+            t_lc=self._tim_s, y_lc=self._fl_s, yerr_lc=self._fle_s,
+            linear_regressors_lc=lin_pars,
+            GP_regressors_lc=self._gp_pars_s_juliet,
+            out_folder=out_dir,
+        )
+        res = data.fit(sampler='dynamic_dynesty', nthreads=nthreads, **self.juliet_fit_kwargs)
 
-        # Calculating the residuals, so that I can compute the MAD
         mads_all = []
-        for ins in range( len(self.instruments) ):
-            model_lc = res.lc.evaluate(instrument=self.instruments[ins])
-            residuals = fl[self.instruments[ins]] - model_lc
-            mads_all.append( self.noise_func(residuals) * 1e6 )
+        for ins in self.instruments:
+            model_lc = res.lc.evaluate(instrument=ins)
+            residuals = self._fl_s[ins] - model_lc
+            mads_all.append(self.noise_func(residuals) * 1e6)
 
         return res.posteriors['lnZ'], mads_all
 
-    def select_optimal_parameters(self):
+    def select_optimal_parameters(self, n_parallel=1):
         """
         Select optimal linear detrending vectors using forward selection based on
         Bayesian evidence.
@@ -6110,6 +6181,20 @@ class SelectLinDetrend(object):
         Unique regressor names are collected across all instruments. When a regressor
         is selected it is included for every instrument that carries it; instruments
         that do not have that regressor are left unchanged.
+
+        Parameters
+        ----------
+        n_parallel : int, optional
+            Number of model fits to run concurrently within each selection round.
+            Default is 1 (sequential).
+
+            When n_parallel > 1 the fits in the inner loop are dispatched to a
+            ProcessPoolExecutor for true CPU parallelism (no GIL contention).
+            The juliet nthreads budget is automatically divided by n_parallel so
+            that the total thread count across all workers stays within self.nthreads.
+            The module-level _lindetrend_worker function is used as the callable so
+            that no part of this instance (including the potentially un-picklable
+            priors callable) needs to be serialised.
 
         Returns
         -------
@@ -6136,37 +6221,92 @@ class SelectLinDetrend(object):
         print(f"  Base model lnZ = {base_lnZ:.2f}")
 
         selected_names = []
-        current_lnZ   = base_lnZ
+        current_lnZ    = base_lnZ
         lnZ_history     = [base_lnZ]
         scatter_history = [base_scatter]
 
+        # Per-worker thread budget so total threads ≤ self.nthreads
+        nthreads_per_worker = max(1, self.nthreads // max(1, n_parallel))
+
         # --- Step 2: forward selection ---
         while remaining_names:
-            best_lnZ    = -np.inf
-            best_name   = None
-            best_scatter = None
 
+            # Build candidates: (name, lin_pars, out_dir)
+            # lin_pars is already sorted and stacked — ready to pickle / pass to juliet.
+            candidates = []
             for name in remaining_names:
                 candidate_names = selected_names + [name]
-
-                # Build lin_reg for this candidate set
-                lin_reg = {}
-                for ins in self.instruments:
-                    reg_dict = {
-                        reg_name: self.linear_regressors[ins][reg_name]
-                        for reg_name in candidate_names
-                        if reg_name in self.linear_regressors[ins]
-                    }
-                    lin_reg[ins] = reg_dict if reg_dict else None
-
+                lin_reg = {
+                    ins: {
+                        reg: self.linear_regressors[ins][reg]
+                        for reg in candidate_names
+                        if reg in self.linear_regressors[ins]
+                    } or None
+                    for ins in self.instruments
+                }
+                # Resolve empty dicts to None
+                lin_reg = {ins: (v if v else None) for ins, v in lin_reg.items()}
+                lin_pars = self._build_lin_pars(lin_reg)
                 out_dir = os.path.join(
                     self.pout,
                     'linsel_' + '_'.join(sorted(candidate_names))
                 )
-                print(f"  Testing regressor(s): {candidate_names}")
-                lnZ, scatter = self._fit_model(lin_reg, out_dir)
-                print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+                candidates.append((name, lin_pars, out_dir))
 
+            # Run fits — parallel (ProcessPoolExecutor) or sequential
+            results = {}  # name -> (lnZ, scatter)
+
+            if n_parallel > 1:
+                # juliet_fit_kwargs forwarded to each worker with per-worker nthreads
+                worker_fit_kwargs = dict(self.juliet_fit_kwargs)
+                worker_fit_kwargs['nthreads'] = nthreads_per_worker
+
+                worker_args_list = [
+                    (
+                        self.instruments,
+                        self._tim_s, self._fl_s, self._fle_s,
+                        self._gp_pars_s_juliet,
+                        lin_pars,
+                        self._cached_priors,
+                        out_dir,
+                        worker_fit_kwargs,
+                        self.noise_method,
+                    )
+                    for _, lin_pars, out_dir in candidates
+                ]
+
+                with concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel) as executor:
+                    future_to_name = {
+                        executor.submit(_lindetrend_worker, args): name
+                        for (name, _, _), args in zip(candidates, worker_args_list)
+                    }
+                    for future in concurrent.futures.as_completed(future_to_name):
+                        name = future_to_name[future]
+                        lnZ, scatter = future.result()
+                        results[name] = (lnZ, scatter)
+                        print(f"  Tested '{name}': lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+            else:
+                for name, _, out_dir in candidates:
+                    candidate_names = selected_names + [name]
+                    lin_reg = {
+                        ins: {
+                            reg: self.linear_regressors[ins][reg]
+                            for reg in candidate_names
+                            if reg in self.linear_regressors[ins]
+                        } or None
+                        for ins in self.instruments
+                    }
+                    lin_reg = {ins: (v if v else None) for ins, v in lin_reg.items()}
+                    print(f"  Testing '{name}': {candidate_names}")
+                    lnZ, scatter = self._fit_model(lin_reg, out_dir, nthreads=nthreads_per_worker)
+                    results[name] = (lnZ, scatter)
+                    print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+
+            # Find the best candidate
+            best_lnZ     = -np.inf
+            best_name    = None
+            best_scatter = None
+            for name, (lnZ, scatter) in results.items():
                 if lnZ > best_lnZ:
                     best_lnZ     = lnZ
                     best_name    = name
