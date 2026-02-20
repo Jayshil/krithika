@@ -1589,7 +1589,7 @@ class julietPlots(object):
 
         return figs_all, axs_all, binsize_all, noise_all, white_noise_all
     
-    def plot_corner(self, planet_only=False, save=True):
+    def plot_corner(self, planet_only=False, param_list=None, save=True):
         """Create a corner plot of selected posterior parameters.
 
 
@@ -1599,6 +1599,10 @@ class julietPlots(object):
             If ``True``, include only planetary parameters in the corner
             plot. If ``False`` (default), include instrumental and noise
             parameters as well when available.
+        param_list : list of str or None, optional
+            If provided, a list of parameter names to include in the corner
+            plot. If ``None`` (default), all parameters are included (subject
+            to the ``planet_only`` filter).
         save : bool, optional
             If ``True`` (default), save the generated figure to
             ``<input_folder>/corner_plot.png``.
@@ -1617,6 +1621,8 @@ class julietPlots(object):
         # Arrays for posteriors and labels
         posteriors, labels, titles = [], [], []
         for i in post_samps.keys():
+            if param_list is not None and i not in param_list:
+                continue
             par = i.split('_')
             if ( 'p1' in par ) or ( 'p2' in par ) or ( 'p3' in par ) or ( 'p4' in par ) or ( 'q1' in par ) or ( 'q2' in par ) or ( 'rho' in par ):
                 ## Adding posteriors and labels ( this parameters are added no matter planet_only is True/False)
@@ -1661,8 +1667,8 @@ class julietPlots(object):
                     ## For flux parameters, we will label them as 'instrument_name et al.'
                     posteriors.append( post_samps[i] * 1e6 )
                     titles.append( par[0] )
-                    if len(i.split('_')) > 2:
-                        labels.append('_'.join(i.split('_')[0:2]) + '_et al. [ppm]')
+                    if len(i.split('_')) > 3:
+                        labels.append('_'.join(i.split('_')[0:3]) + '_et al. [ppm]')
                     else:
                         labels.append(i + ' [ppm]')
 
@@ -1692,7 +1698,10 @@ class julietPlots(object):
                 else:
                     ## Else
                     posteriors.append( post_samps[i] )
-                    labels.append( i )
+                    if len(i.split('_')) > 3:
+                        labels.append('_'.join(i.split('_')[0:3]) + '_et al.')
+                    else:
+                        labels.append(i)
                     titles.append( par[0] )
 
             else:
@@ -1700,7 +1709,10 @@ class julietPlots(object):
                 if not planet_only:
                     if ( i[0:7] != 'unnamed' ) and ( i[0:7] != 'loglike' ):
                         posteriors.append( post_samps[i] )
-                        labels.append( i )
+                        if len(i.split('_')) > 3:
+                            labels.append('_'.join(i.split('_')[0:3]) + '_et al.')
+                        else:
+                            labels.append(i)
                         titles.append( par[0] )
         
         # ------------------------------------------
