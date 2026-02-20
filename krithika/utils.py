@@ -357,7 +357,7 @@ def corner_plot(samples, labels, **kwargs):
 
     return fig
 
-def make_psd(times, flux, plot=True, plot_max_freq=True, timeunit=None):
+def make_psd(times, flux, nos_freq_points=100000, plot=True, plot_max_freq=True, timeunit=None):
     """Compute a Lomb-Scargle power spectral density (PSD) for a light curve.
 
     The routine converts ``times`` (assumed in days) to seconds and the
@@ -373,6 +373,8 @@ def make_psd(times, flux, plot=True, plot_max_freq=True, timeunit=None):
     flux : array-like
         Relative flux measurements (unitless, e.g. normalised to 1.0). The
         function converts these to ppm internally.
+    nos_freq_points : int, optional
+        Number of frequency points to evaluate the PSD on. Default is 100,000.
     plot : bool, optional
         If ``True`` (default) create and return a matplotlib figure and
         axes containing the PSD plot. If ``False``, no plot is created and
@@ -413,7 +415,7 @@ def make_psd(times, flux, plot=True, plot_max_freq=True, timeunit=None):
 
     ## Frequency grid
     min_freq, max_freq = 1 / np.ptp(times), 1 / np.nanmedian(np.diff(times)) * 0.5
-    freq_grid = np.linspace(min_freq, max_freq, 100000)
+    freq_grid = np.linspace(min_freq, max_freq, nos_freq_points)
 
     ## And the Lomb-Scargle periodogram
     psd1 = LombScargle(times, fl1, normalization='psd').power(frequency=freq_grid)
