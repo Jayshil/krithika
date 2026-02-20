@@ -6225,6 +6225,11 @@ class SelectLinDetrend(object):
         lnZ_history     = [base_lnZ]
         scatter_history = [base_scatter]
 
+        # Tracks every tested regressor's best result for the final summary table.
+        # Key: regressor name. Value: dict with lnZ, scatter, delta_lnZ, round.
+        all_results = {}
+        round_num   = 0
+
         # Per-worker thread budget so total threads ≤ self.nthreads
         nthreads_per_worker = max(1, self.nthreads // max(1, n_parallel))
 
@@ -6302,6 +6307,18 @@ class SelectLinDetrend(object):
                     results[name] = (lnZ, scatter)
                     print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
 
+            # Accumulate into all_results (overwriting any previous round value so
+            # the table always shows the most recent test, which has the largest and
+            # most representative base model behind it).
+            round_num += 1
+            for name, (lnZ, scatter) in results.items():
+                all_results[name] = {
+                    'lnZ':       lnZ,
+                    'scatter':   scatter,
+                    'delta_lnZ': lnZ - current_lnZ,
+                    'round':     round_num,
+                }
+
             # Find the best candidate
             best_lnZ     = -np.inf
             best_name    = None
@@ -6327,7 +6344,57 @@ class SelectLinDetrend(object):
                 )
                 break
 
-        print(f"Selected regressors: {selected_names}")
+        # ── Final summary table ──────────────────────────────────────────────────
+        col_name_w = max(len(n) for n in list(all_regressor_names) + ['[base model]']) + 4
+        col_lnz_w  = 10
+        col_dlnz_w = 11
+        col_scat_w = 12
+        col_stat_w = 22
+
+        header_parts  = [f"{'Regressor':<{col_name_w}}", f"{'lnZ':>{col_lnz_w}}",
+                         f"{'delta lnZ':>{col_dlnz_w}}"]
+        header_parts += [f"{(ins + ' (ppm)'):>{col_scat_w}}" for ins in self.instruments]
+        header_parts += [f"{'Status':<{col_stat_w}}"]
+        header = ' | '.join(header_parts)
+        sep    = '-+-'.join(['-' * col_name_w, '-' * col_lnz_w, '-' * col_dlnz_w]
+                            + ['-' * col_scat_w] * len(self.instruments)
+                            + ['-' * col_stat_w])
+        total_w = len(header)
+        title   = 'Linear Detrending Selection Summary'
+
+        print('\n' + '=' * total_w)
+        print(title.center(total_w))
+        print('=' * total_w)
+        print(header)
+        print(sep)
+
+        def _fmt_row(marker, name, lnZ, delta_str, scatter_list, status):
+            label = f"{marker}{name}"
+            row   = [f"{label:<{col_name_w}}", f"{lnZ:>{col_lnz_w}.2f}",
+                     f"{delta_str:>{col_dlnz_w}}"]
+            row  += [f"{sc:>{col_scat_w}.2f}" for sc in scatter_list]
+            row  += [f"{status:<{col_stat_w}}"]
+            print(' | '.join(row))
+
+        # Base model row
+        _fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model')
+        print(sep)
+
+        # Selected regressors (in selection order), then non-selected (sorted)
+        not_selected = sorted(n for n in all_results if n not in selected_names)
+        for name in selected_names + not_selected:
+            r = all_results[name]
+            dlnZ = r['delta_lnZ']
+            delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
+            if name in selected_names:
+                marker = '>> '
+                status = f"SELECTED (round {r['round']})"
+            else:
+                marker = '   '
+                status = 'not selected'
+            _fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status)
+
+        print('=' * total_w)
 
         # Build the final selected-regressors dict
         selected_regressors = {}
