@@ -6237,10 +6237,8 @@ class SelectLinDetrend(object):
         lnZ_history     = [base_lnZ]
         scatter_history = [base_scatter]
 
-        # Tracks every tested regressor's best result for the final summary table.
-        # Key: regressor name. Value: dict with lnZ, scatter, delta_lnZ, round.
-        all_results = {}
-        round_num   = 0
+        # Stores every round's results for the final per-round summary table.
+        all_rounds = []
 
         # Per-worker thread budget so total threads ≤ self.nthreads
         nthreads_per_worker = max(1, self.nthreads // max(1, n_parallel))
@@ -6319,17 +6317,22 @@ class SelectLinDetrend(object):
                     results[name] = (lnZ, scatter)
                     print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
 
-            # Accumulate into all_results (overwriting any previous round value so
-            # the table always shows the most recent test, which has the largest and
-            # most representative base model behind it).
-            round_num += 1
-            for name, (lnZ, scatter) in results.items():
-                all_results[name] = {
-                    'lnZ':       lnZ,
-                    'scatter':   scatter,
-                    'delta_lnZ': lnZ - current_lnZ,
-                    'round':     round_num,
-                }
+            # Record this round for the summary table. 'selected' is filled in
+            # below if a candidate clears the evidence threshold.
+            all_rounds.append({
+                'round_num':  len(all_rounds) + 1,
+                'base_set':   list(selected_names),   # snapshot before this round
+                'base_lnZ':   current_lnZ,
+                'candidates': {
+                    name: {
+                        'lnZ':       lnZ,
+                        'scatter':   scatter,
+                        'delta_lnZ': lnZ - current_lnZ,
+                    }
+                    for name, (lnZ, scatter) in results.items()
+                },
+                'selected': None,
+            })
 
             # Find the best candidate
             best_lnZ     = -np.inf
@@ -6344,6 +6347,7 @@ class SelectLinDetrend(object):
             # Accept only if improvement is >= 2 log-evidence units
             if best_lnZ - current_lnZ >= 2.0:
                 print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
+                all_rounds[-1]['selected'] = best_name
                 selected_names.append(best_name)
                 remaining_names.remove(best_name)
                 current_lnZ = best_lnZ
@@ -6361,24 +6365,18 @@ class SelectLinDetrend(object):
         col_lnz_w  = 10
         col_dlnz_w = 11
         col_scat_w = 12
-        col_stat_w = 22
+        col_stat_w = 14
 
         header_parts  = [f"{'Regressor':<{col_name_w}}", f"{'lnZ':>{col_lnz_w}}",
                          f"{'delta lnZ':>{col_dlnz_w}}"]
         header_parts += [f"{(ins + ' (ppm)'):>{col_scat_w}}" for ins in self.instruments]
         header_parts += [f"{'Status':<{col_stat_w}}"]
-        header = ' | '.join(header_parts)
-        sep    = '-+-'.join(['-' * col_name_w, '-' * col_lnz_w, '-' * col_dlnz_w]
-                            + ['-' * col_scat_w] * len(self.instruments)
-                            + ['-' * col_stat_w])
+        header  = ' | '.join(header_parts)
+        sep     = '-+-'.join(['-' * col_name_w, '-' * col_lnz_w, '-' * col_dlnz_w]
+                             + ['-' * col_scat_w] * len(self.instruments)
+                             + ['-' * col_stat_w])
         total_w = len(header)
         title   = 'Linear Detrending Selection Summary'
-
-        print('\n' + '=' * total_w)
-        print(title.center(total_w))
-        print('=' * total_w)
-        print(header)
-        print(sep)
 
         def _fmt_row(marker, name, lnZ, delta_str, scatter_list, status):
             label = f"{marker}{name}"
@@ -6388,23 +6386,36 @@ class SelectLinDetrend(object):
             row  += [f"{status:<{col_stat_w}}"]
             print(' | '.join(row))
 
-        # Base model row
-        _fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model')
+        print('\n' + '=' * total_w)
+        print(title.center(total_w))
+        print('=' * total_w)
+        print(header)
         print(sep)
 
-        # Selected regressors (in selection order), then non-selected (sorted)
-        not_selected = sorted(n for n in all_results if n not in selected_names)
-        for name in selected_names + not_selected:
-            r = all_results[name]
-            dlnZ = r['delta_lnZ']
-            delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
-            if name in selected_names:
-                marker = '>> '
-                status = f"SELECTED (round {r['round']})"
-            else:
-                marker = '   '
-                status = 'not selected'
-            _fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status)
+        # Base model row
+        _fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model')
+
+        # One section per round
+        for rd in all_rounds:
+            base_set_str = '[' + ', '.join(rd['base_set']) + ']' if rd['base_set'] else 'none'
+            print(sep)
+            print(f"  Round {rd['round_num']}  "
+                  f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})")
+            print(sep)
+            # Selected candidate first, then remainder sorted by lnZ descending
+            ordered = sorted(
+                rd['candidates'].keys(),
+                key=lambda n: (n != rd['selected'], -rd['candidates'][n]['lnZ'])
+            )
+            for name in ordered:
+                r = rd['candidates'][name]
+                dlnZ = r['delta_lnZ']
+                delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
+                if name == rd['selected']:
+                    marker, status = '>> ', 'SELECTED'
+                else:
+                    marker, status = '   ', 'not selected'
+                _fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status)
 
         print('=' * total_w)
 
