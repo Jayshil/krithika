@@ -5985,7 +5985,220 @@ def _lindetrend_worker(worker_args):
 
 
 class SelectLinDetrend(object):
-    # This class is used to select the best linear detrending model for a light curve fitting
+    """Select optimal linear detrending vectors using model selection with Bayesian evidence.
+
+    This class provides tools to systematically identify the best combination of
+    linear detrending regressors (e.g., time polynomials, roll angle modulation,
+    background variations) for multi-instrument light-curve fitting. It employs
+    model selection based on log-evidence improvements, starting from a base model
+    with no linear regressors and iteratively adding vectors that maximize evidence
+    gain. A regressor is accepted only if it improves log-evidence by at least
+    2 units; the search terminates when no remaining regressor meets this threshold.
+
+    The class interfaces with the ``juliet`` package for Bayesian model fitting and supports
+    parallel processing of model comparisons through concurrent fitting. It automatically
+    handles multi-instrument datasets where different instruments may have different
+    numbers and types of regressors available.
+
+    Linear regressors can be passed directly or be generated from roll angle values via
+    Fourier series expansion. All data (time, flux, errors, regressors) are expected
+    as per-instrument dictionaries, enabling straightforward multi-instrument analysis.
+
+    Parameters
+    ----------
+    time : dict
+        Time stamps for each instrument. Keys are instrument names; values are
+        1-D numpy arrays of time points (in BJD or similar). All arrays should
+        have the same length as corresponding ``flux`` and ``flux_err`` arrays.
+    flux : dict
+        Flux (or normalized flux) measurements for each instrument. Keys are
+        instrument names; values are 1-D numpy arrays of flux measurements.
+    flux_err : dict
+        Flux uncertainties for each instrument. Keys are instrument names;
+        values are 1-D numpy arrays of flux uncertainties (same length as flux).
+    priors : callable
+        A function mapping an instrument name (keyword argument ``instrument``)
+        to a tuple of three lists:
+        
+        - param_names : list of str
+          Names of juliet-compatible model parameters (e.g., 't0_p1', 'p_p1', 'P_p1').
+        - distributions : list of str
+          juliet-compatible distribution names (e.g., 'normal', 'uniform', 'loguniform').
+        - hyperparams : list
+          Hyperparameter lists for each distribution. For example, a 'normal' 
+          distribution takes [mean, std], and a 'uniform' takes [lower, upper].
+        
+        The function is called once per instrument during initialization and
+        results are cached internally.
+    linear_regressors : dict
+        Linear regressors to consider for detrending. Keys are instrument names;
+        values are dicts where each key is a regressor name (str) and value is a
+        1-D numpy array (same length as time for that instrument). Examples include
+        'time', 'time^2', 'background', 'systematics', etc.
+        
+        If ``roll_degree`` and ``roll`` are both provided, roll-angle Fourier
+        series regressors ('ROLL_SIN_1', 'ROLL_COS_1', etc.) are automatically
+        added to ``linear_regressors`` during initialization.
+    gp_regressors : dict or None, optional
+        Gaussian Process (GP) regressors to use for systematics fitting. Keys are
+        instrument names; values are 1-D numpy arrays of regressor values
+        (e.g., roll angle, time). If provided, these are sorted
+        and passed to juliet for GP handling. Default is ``None``.
+    roll_degree : int or None, optional
+        Maximum degree of roll-angle Fourier series to include as linear regressors.
+        If provided (and ``roll`` is also provided), Fourier series regressors
+        up to degree ``roll_degree`` are automatically generated and added to
+        ``linear_regressors``. Must be paired with ``roll`` parameter.
+        Default is ``None``.
+    roll : dict or None, optional
+        Roll angle values (in degrees) for each instrument. Keys are instrument
+        names; values are 1-D numpy arrays of roll angles. Required only if
+        ``roll_degree`` is specified. Default is ``None``.
+    noise_method : str, optional
+        Method to compute noise/scatter in residuals. Options are:
+        
+        - 'astropy' : Uses median absolute deviation (astropy.stats.mad_std).
+        - 'std' : Uses standard deviation (numpy.std).
+        - 'pipe' : Uses the PIPE photometric uncertainty (pipe_mad function).
+        
+        This method is applied to residuals after each model fit to estimate
+        per-instrument noise levels. Default is ``'astropy'``.
+    juliet_fit_kwargs : dict, optional
+        Additional keyword arguments to pass to ``juliet.fit()`` during model fits.
+        For example, ``{'sampler': 'dynamic_dynesty', 'nlive': 500}``.
+        Default is an empty dict ``{}``.
+    nthreads : int, optional
+        Total number of CPU threads available for fitting. Shared among parallel
+        workers if ``n_parallel > 1`` is used in :meth:`select_optimal_parameters`.
+        Default is the total number of available CPU cores.
+    pout : str, optional
+        Output directory for saving juliet fit results. Each model fit creates
+        a subdirectory named after the included regressors (e.g., 'linsel_base',
+        'linsel_time', 'linsel_time_background'). Default is the current working
+        directory.
+
+    Attributes
+    ----------
+    time, flux, flux_err : dict
+        Stored input light-curve data (per-instrument).
+    instruments : list of str
+        Extracted list of instrument names from the keys of ``time`` dict.
+    priors : callable
+        Stored prior function.
+    linear_regressors : dict
+        Stored linear regressors (or regressors with added roll terms if
+        ``roll_degree`` was provided).
+    GP_regressors : dict or None
+        Stored GP regressors.
+    roll_degree, roll : int or None, dict or None
+        Stored roll parameters.
+    noise_method : str
+        Stored noise method name.
+    noise_func : callable
+        Cached noise function (e.g., mad_std, np.std, or pipe_mad).
+    juliet_fit_kwargs : dict
+        Stored juliet fitting kwargs.
+    nthreads : int
+        Stored thread count.
+    pout : str
+        Stored output directory.
+    _sort_idx, _tim_s, _fl_s, _fle_s : dict
+        Per-instrument sort indices and sorted data arrays (cached by :meth:`_precompute`).
+    _gp_pars_s, _gp_pars_s_juliet : dict or None
+        Cached GP regressor arrays (sorted, or None if not applicable).
+    _cached_priors : dict
+        Per-instrument prior tuples cached from the priors callable.
+
+    Main Methods
+    ----------
+    select_optimal_parameters(n_parallel=1)
+        Execute forward selection to identify optimal linear detrending vectors
+        based on log-evidence maximization.
+
+    Notes
+    -----
+    - All fitting is performed using the ``juliet`` Bayesian fitting package.
+    - Log-evidence improvements are computed via ``juliet.fit()`` and returned
+      as ``posteriors['lnZ']``.
+    - The model selection algorithm is greedy: it selects the regressor with
+      the maximum evidence gain at each step, then moves to the next round.
+    - A regressor is accepted only if it improves log-evidence by >= 2.0 units.
+      This threshold reflects a Bayes factor of ~exp(2) ≈ 7.4, corresponding to
+      "strong" evidence in Bayesian hypothesis testing.
+    - When ``n_parallel > 1`` in :meth:`select_optimal_parameters`, concurrent
+      fitting is performed using ``concurrent.futures.ProcessPoolExecutor``. To
+      keep total thread usage under control, the per-worker nthreads budget is
+      automatically adjusted as ``nthreads // n_parallel``.
+    - Roll-angle Fourier series regressors (if generated) follow the naming
+      convention 'ROLL_SIN_k' and 'ROLL_COS_k' for degree k = 1, 2, ..., roll_degree.
+    - Regressors that do not exist for a particular instrument (e.g., a regressor
+      available only for one camera in a multi-camera setup) are automatically
+      skipped for that instrument during model construction.
+    - All per-instrument data (time, flux, errors, regressors) are length-checked
+      during juliet loading but not explicitly in __init__. Ensure consistency
+      before instantiation.
+
+    Examples
+    --------
+    Basic forward selection with two instruments:
+
+    >>> import numpy as np
+    >>> time = {
+    ...     'camera_1': np.linspace(2459000, 2459001, 200),
+    ...     'camera_2': np.linspace(2459000, 2459001, 150),
+    ... }
+    >>> flux = {
+    ...     'camera_1': 1.0 + 0.01 * np.random.randn(200),
+    ...     'camera_2': 1.0 + 0.005 * np.random.randn(150),
+    ... }
+    >>> flux_err = {
+    ...     'camera_1': np.full(200, 0.005),
+    ...     'camera_2': np.full(150, 0.003),
+    ... }
+    >>> linear_regressors = {
+    ...     'camera_1': {
+    ...         'time': time['camera_1'],
+    ...         'time^2': time['camera_1']**2,
+    ...     },
+    ...     'camera_2': {
+    ...         'time': time['camera_2'],
+    ...         'time^2': time['camera_2']**2,
+    ...     },
+    ... }
+    >>> def priors_func(instrument):
+    ...     return (['t0_p1', 'p_p1', 'P_p1'], 
+    ...             ['normal', 'normal', 'uniform'],
+    ...             [[2459000.5, 0.1], [3.5, 0.01], [0.01, 0.1]])
+    >>> 
+    >>> selector = SelectLinDetrend(
+    ...     time=time,
+    ...     flux=flux,
+    ...     flux_err=flux_err,
+    ...     priors=priors_func,
+    ...     linear_regressors=linear_regressors,
+    ...     pout='/path/to/results'
+    ... )
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters(n_parallel=2)
+
+    With roll-angle detrending:
+
+    >>> roll_angles = {
+    ...     'camera_1': np.random.uniform(0, 360, 200),
+    ...     'camera_2': np.random.uniform(0, 360, 150),
+    ... }
+    >>> selector = SelectLinDetrend(
+    ...     time=time,
+    ...     flux=flux,
+    ...     flux_err=flux_err,
+    ...     priors=priors_func,
+    ...     linear_regressors=linear_regressors,
+    ...     roll_degree=3,
+    ...     roll=roll_angles,
+    ...     pout='/path/to/results'
+    ... )
+    >>> # Now linear_regressors includes 'ROLL_SIN_1', 'ROLL_COS_1', ..., 'ROLL_SIN_3', 'ROLL_COS_3'
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters()
+    """
     def __init__(self, time, flux, flux_err, priors, linear_regressors, gp_regressors=None, roll_degree=None, roll=None, noise_method='astropy', juliet_fit_kwargs={}, nthreads=multiprocessing.cpu_count(), pout=os.getcwd() ):
         # Time, flux, and flux_err are the light curve data. All of them are dict with keys of instrument name.
         self.time = time
