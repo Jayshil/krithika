@@ -6122,8 +6122,8 @@ class SelectLinDetrend(object):
       as ``posteriors['lnZ']``.
     - The model selection algorithm is greedy: it selects the regressor with
       the maximum evidence gain at each step, then moves to the next round.
-    - A regressor is accepted only if it improves log-evidence by >= 2.0 units.
-      This threshold reflects a Bayes factor of ~exp(2) ≈ 7.4, corresponding to
+    - A regressor is accepted only if it improves log-evidence by >= delta_lnZ_threshold
+      (default 2.0). This threshold reflects a Bayes factor of ~exp(2) ≈ 7.4, corresponding to
       "strong" evidence in Bayesian hypothesis testing.
     - When ``n_parallel > 1`` in :meth:`select_optimal_parameters`, concurrent
       fitting is performed using ``concurrent.futures.ProcessPoolExecutor``. To
@@ -6392,16 +6392,16 @@ class SelectLinDetrend(object):
 
         return res.posteriors['lnZ'], mads_all
 
-    def select_optimal_parameters(self, n_parallel=1):
+    def select_optimal_parameters(self, n_parallel=1, delta_lnZ_threshold=2.0):
         """
         Select optimal linear detrending vectors using forward selection based on
         Bayesian evidence.
 
         The algorithm starts with a base model that has no linear regressors and
         iteratively adds the vector that yields the greatest improvement in log-evidence.
-        A vector is only accepted if it raises the log-evidence by at least 2 units
-        over the previous best model. The search stops when no remaining vector
-        meets this threshold.
+        A vector is only accepted if it raises the log-evidence by at least
+        delta_lnZ_threshold units over the previous best model. The search stops
+        when no remaining vector meets this threshold.
 
         Unique regressor names are collected across all instruments. When a regressor
         is selected it is included for every instrument that carries it; instruments
@@ -6420,6 +6420,11 @@ class SelectLinDetrend(object):
             The module-level _lindetrend_worker function is used as the callable so
             that no part of this instance (including the potentially un-picklable
             priors callable) needs to be serialised.
+        delta_lnZ_threshold : float, optional
+            Minimum improvement in log-evidence required to accept a new regressor.
+            A candidate is added to the model only if its lnZ exceeds the current
+            base model's lnZ by at least this value. Default is 2.0, which
+            corresponds to "strong evidence" on the Jeffreys scale.
 
         Returns
         -------
@@ -6557,8 +6562,8 @@ class SelectLinDetrend(object):
                     best_name    = name
                     best_scatter = scatter
 
-            # Accept only if improvement is >= 2 log-evidence units
-            if best_lnZ - current_lnZ >= 2.0:
+            # Accept only if improvement meets the evidence threshold
+            if best_lnZ - current_lnZ >= delta_lnZ_threshold:
                 print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
                 all_rounds[-1]['selected'] = best_name
                 selected_names.append(best_name)
@@ -6568,7 +6573,7 @@ class SelectLinDetrend(object):
                 scatter_history.append(best_scatter)
             else:
                 print(
-                    f"  No regressor improved lnZ by >= 2 "
+                    f"  No regressor improved lnZ by >= {delta_lnZ_threshold} "
                     f"(best delta = {best_lnZ - current_lnZ:.2f}). Stopping."
                 )
                 break
