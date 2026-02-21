@@ -6597,24 +6597,26 @@ class SelectLinDetrend(object):
                      f"{delta_str:>{col_dlnz_w}}"]
             row  += [f"{sc:>{col_scat_w}.2f}" for sc in scatter_list]
             row  += [f"{status:<{col_stat_w}}"]
-            print(' | '.join(row))
+            return ' | '.join(row)
 
-        print('\n' + '=' * total_w)
-        print(title.center(total_w))
-        print('=' * total_w)
-        print(header)
-        print(sep)
+        # Build all lines first so they can be printed and saved in one pass
+        lines = []
+        lines.append('\n' + '=' * total_w)
+        lines.append(title.center(total_w))
+        lines.append('=' * total_w)
+        lines.append(header)
+        lines.append(sep)
 
         # Base model row
-        _fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model')
+        lines.append(_fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model'))
 
         # One section per round
         for rd in all_rounds:
             base_set_str = '[' + ', '.join(rd['base_set']) + ']' if rd['base_set'] else 'none'
-            print(sep)
-            print(f"  Round {rd['round_num']}  "
-                  f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})")
-            print(sep)
+            lines.append(sep)
+            lines.append(f"  Round {rd['round_num']}  "
+                         f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})")
+            lines.append(sep)
             # Selected candidate first, then remainder sorted by lnZ descending
             ordered = sorted(
                 rd['candidates'].keys(),
@@ -6628,9 +6630,19 @@ class SelectLinDetrend(object):
                     marker, status = '>> ', 'SELECTED'
                 else:
                     marker, status = '   ', 'not selected'
-                _fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status)
+                lines.append(_fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status))
 
-        print('=' * total_w)
+        lines.append('=' * total_w)
+
+        # Print to stdout
+        for line in lines:
+            print(line)
+
+        # Save to file
+        summary_path = os.path.join(self.pout, 'linsel_summary.txt')
+        with open(summary_path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        print(f"  Summary saved to {summary_path}")
 
         # Build the final selected-regressors dict
         selected_regressors = {}
