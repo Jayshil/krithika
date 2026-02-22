@@ -487,6 +487,91 @@ def make_psd(times, flux, nos_freq_points=100000, plot=True, plot_max_freq=True,
 
     return freq_grid, psd1, fig, axs, per_max_pow
 
+def psd_fitting_kernel(times, flux, kernel, init_values, bounds=None, nos_freq_points=100000, plot=True, timeunit=None, **kwargs):
+    """Fit a kernel PSD to the Lomb-Scargle periodogram of a light curve.
+
+    The function computes the Lomb-Scargle PSD of the input light curve
+    and fits the provided kernel PSD to it using ``scipy.optimize.minimize``.
+    The kernel should be a function that takes frequency and kernel parameters
+    as input and returns the corresponding PSD value. The fitting is done by
+    minimizing the squared difference between the Lomb-Scargle PSD and the
+    kernel PSD evaluated on the same frequency grid.
+
+    Parameters
+    ----------
+    times : array-like
+        Time stamps of the observations (in days).
+    flux : array-like
+        Relative flux measurements (unitless, e.g. normalised to 1.0).
+    kernel : callable
+        A celerite.terms term that takes parameters as input and returns kernel instance.
+    init_values : list or array-like
+        Initial guess for the kernel parameters to be fitted.
+    bounds : list of tuples, optional
+        Bounds for the kernel parameters in the form [(min1, max1), (min2, max2), ...].
+        If ``None`` (default), no bounds are applied.
+    nos_freq_points : int, optional
+        Number of frequency points to evaluate the PSD on. Default is 100,000.
+    plot : bool, optional
+        If ``True`` (default), create and return a matplotlib figure and axes containing
+        the PSD plot with the Lomb-Scargle PSD, the fitted kernel PSD, and the
+        initial guess kernel PSD for comparison. If ``False``, no plot is created
+        and ``fig`` and ``axs`` in the return tuple will be ``None``.
+    timeunit : {'d','hr','min'} or None, optional
+        Force the secondary x-axis unit for the period conversion. If ``None`` (default)
+        the function selects days/hours/minutes automatically based on the frequency grid span.
+    **kwargs
+        Additional keyword arguments to pass to ``scipy.optimize.minimize`` for the optimization process (e.g. method, options, etc.).
+    
+    Returns
+    -------
+    best_fit_params : ndarray
+        Best-fit kernel parameters found by the optimization.
+    kernel_psd_fit : ndarray
+        Kernel PSD evaluated on the frequency grid using the best-fit parameters.
+    freq_grid : astropy.units.Quantity (Hz)
+        Frequency grid used to evaluate the PSD.
+    psd_ls : astropy.units.Quantity
+        Lomb-Scargle power spectral density evaluated on ``freq_grid`` (units: ppm^2 Hz^-1).
+    fig : matplotlib.figure.Figure or None
+        Figure with the PSD plot when ``plot=True``, otherwise ``None``.
+    axs : matplotlib.axes.Axes or None
+        Axes for the PSD plot when ``plot=True``, otherwise ``None``.
+    """
+
+    # First, let's compute the Lomb-Scargle PSD using the previously defined function
+    freq_grid, psd_ls, fig, axs, _ = make_psd(times=times, flux=flux * 1e-6, nos_freq_points=nos_freq_points, plot=plot, timeunit=timeunit)
+    freq_grid = freq_grid.to(u.d**-1)
+    psd_ls = psd_ls / len(times)
+
+    # Now we define the objective function for optimization (squared difference between PSDs)
+    def objective(params):
+        kernel_instance = kernel(*params)
+        kernel_psd = kernel_instance.get_psd(2*np.pi*freq_grid.value) / 2 / np.pi
+        return np.sum( (psd_ls.value - kernel_psd)**2 )
+
+    # Performing the optimization to find best-fit parameters
+    result = minimize(objective, x0=init_values, bounds=bounds, **kwargs)
+    best_fit_params = result.x
+
+    # Evaluating the kernel PSD with the best-fit parameters
+    kernel_instance = kernel(*best_fit_params)
+    kernel_psd_fit = kernel_instance.get_psd(2*np.pi*freq_grid.value) / 2 / np.pi
+
+    if plot:
+        # Plotting the fitted kernel PSD on top of the Lomb-Scargle PSD
+        axs.plot(freq_grid.to(u.s**-1), kernel_psd_fit * len(times), color='navy', lw=1., label='Fitted Kernel PSD', zorder=20)
+
+        # Also plotting the kernel PSD with initial guess parameters for comparison
+        kernel_instance_init = kernel(*init_values)
+        kernel_psd_init = kernel_instance_init.get_psd(2*np.pi*freq_grid.value) / 2 / np.pi
+        axs.plot(freq_grid.to(u.s**-1), kernel_psd_init * len(times), color='gray', lw=1., ls='--', label='Initial Guess Kernel PSD')
+        
+        axs.legend()
+
+    return best_fit_params, kernel_psd_fit, freq_grid, psd_ls, fig, axs
+
+
 def standarize_data(input_data):
     """
     Standarize the dataset.
