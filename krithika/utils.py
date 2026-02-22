@@ -464,11 +464,11 @@ def make_psd(times, flux, nos_freq_points=100000, plot=True, plot_max_freq=True,
 
         # Define properties to define upper axis as well:
         def freq2tim(x):
-            x = x * u.Hz
+            x = np.where(x != 0, x, np.nan) * u.Hz
             return (1/x).to(time_unit).value
         
         def tim2freq(x):
-            x = x * u.s
+            x = np.where(x != 0, x, np.nan) * u.s
             return (1/x).to(u.Hz).value
 
         ax2 = axs.secondary_xaxis("top", functions=(freq2tim, tim2freq))
