@@ -217,6 +217,9 @@ Finally, using ``julietPlots`` class, we can plot light curve models, phase fold
 
 Inverting Cowan & Agol (2008) phase curve model
 -----------------------------------------------
+
+If we used Cowan & Agol (2008) phase curve model, then we can use ``InvertCowanAgolPC`` class to invert the fitted phase curve to find thermal physical properties of the planet as shown below:
+
 .. code-block:: python
 
    import numpy as np
@@ -266,6 +269,60 @@ Inverting Cowan & Agol (2008) phase curve model
 
    ## Phase offsets (hotspot shift and phase shift)
    phi_off, phi_off_err, phase_off, phase_off_err = invert.phase_offsets(method='root')
+
+
+Selecting linear detrending regressors
+--------------------------------------
+
+The ``LinearRegressorSelector`` class allows users to perform forward stepwise model selection of linear detrending regressors based on log-evidence or scatter in the residuals. The user can provide a list of potential linear regressors (e.g., roll angle sinusoids, background flux, centroid positions) and the class will iteratively add the regressor that improves the model fit the most at each step.
+
+.. code-block:: python
+
+   from krithika import SelectLinDetrend
+   import numpy as np
+
+   # Prepare data per instrument
+   time = {'CHEOPS1': np.linspace(0, 100, 1000), 'CHEOPS2': np.linspace(0, 100, 1000)}
+   flux = {'CHEOPS1': np.random.randn(1000) * 0.001 + 1, 'CHEOPS2': np.random.randn(1000) * 0.002 + 1}
+   flux_err = {'CHEOPS1': np.ones(1000) * 0.001, 'CHEOPS2': np.ones(1000) * 0.002}
+   roll_angle = {'CHEOPS1': np.random.uniform(0,360,1000), 'CHEOPS2': np.random.uniform(0,360,1000)}
+
+   # Define priors
+   def get_priors(instrument):
+      ## juliet compatible priors
+      par = ['P_p1', 't0_p1', 'p_p1', 'b_p1', 'q1_' + instrument, 'q2_' + instrument, 'ecc_p1', 'omega_p1', 'a_p1']
+      dist = ['fixed', 'fixed', 'uniform', 'fixed', 'uniform', 'uniform', 'fixed', 'fixed', 'fixed']
+      hypers = [1.0, 0.0, [0., 0.1], 0.0, [0., 1.], [0., 1.], 0., 90., 10.]
+
+      par = par + ['GP_sigma_' + ins, 'GP_rho_' + ins]
+      dist = dist + ['loguniform', 'loguniform']
+      hypers = hypers + [[1e-3, 1e2], [1, 500]]
+      return par, dist, hypers
+
+   # Define linear regressors
+   linear_regressors = {
+      'CHEOPS1': {'time': time['CHEOPS1'], 'time_sq': time['CHEOPS1']**2},
+      'CHEOPS2': {'time': time['CHEOPS2'], 'time_sq': time['CHEOPS2']**2}
+   }
+
+   # Create selector and run optimization
+   selector = SelectLinDetrend(
+      time=time,
+      flux=flux,
+      flux_err=flux_err,
+      priors=get_priors,
+      linear_regressors=linear_regressors,
+      roll_degree=3,
+      roll=roll_angle,
+      pout="./detrend_results"
+   )
+
+   # Find optimal regressors (using lnZ -- Bayesian evidence -- as a selection criteria)
+   selected_regressors = selector.select_optimal_parameters(n_parallel=4, delta_lnZ_threshold=2.0, selection_method='lnZ')
+
+   # Find optimal regressors (using  scatter in the residuals as a selection criteria)
+   selected_regressors = selector.select_optimal_parameters(n_parallel=4, selection_method='scatter')
+
 
 Modules & Classes
 =================

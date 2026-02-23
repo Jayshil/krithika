@@ -6198,6 +6198,11 @@ class SelectLinDetrend(object):
     ... )
     >>> # Now linear_regressors includes 'ROLL_SIN_1', 'ROLL_COS_1', ..., 'ROLL_SIN_3', 'ROLL_COS_3'
     >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters()
+
+    It is possible to use scatter in the residuals (instead of log-evidence) for model selection by setting selection_method='scatter' in select_optimal_parameters. In this case, the regressor that minimizes the scatter (as computed by noise_method) is selected at each step.
+
+    >>> # Using scatter-based selection instead of log-evidence
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters(selection_method='scatter')
     """
     def __init__(self, time, flux, flux_err, priors, linear_regressors, gp_regressors=None, roll_degree=None, roll=None, noise_method='astropy', juliet_fit_kwargs={}, nthreads=multiprocessing.cpu_count(), pout=os.getcwd() ):
         # Time, flux, and flux_err are the light curve data. All of them are dict with keys of instrument name.

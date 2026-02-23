@@ -35,6 +35,11 @@ The :code:`InvertCowanAgolPC` class can be used to invert the Cowan & Agol (2008
 .. autoclass:: krithika.InvertCowanAgolPC
    :members:
 
+The :code:`SelectLinDetrend` class can be used to perform linear detrending and model selection using log-evidence or scatter in the residuals. It has the following methods:
+
+.. autoclass:: krithika.SelectLinDetrend
+   :members:
+
 :code:`krithika` has a simple light weight class to view the 2D, 3D, or 4D data cubes, with functionalities similar to DS9. The :code:`NDImageViewer` class has the following methods:
 
 .. autoclass:: krithika.NDImageViewer

@@ -195,6 +195,9 @@ data.plot_corner(planet_only=False, save=True)
 ```
 
 ### Inverting Cowan & Agol (2008) phase curve model
+
+If we used Cowan & Agol (2008) phase curve model, then we can use `InvertCowanAgolPC` class to invert the fitted phase curve to find thermal physical properties of the planet as shown below:
+
 ```python
 import numpy as np
 from astropy import units as u
@@ -245,7 +248,59 @@ A_B, eps_kelp, _, _, _ = invert.albedo_eps_from_temp_map(a_by_Rst)
 phi_off, phi_off_err, phase_off, phase_off_err = invert.phase_offsets(method='root')
 ```
 
----
+### Selecting linear detrending regressors
+
+The `SelectLinDetrend` class provides Bayesian model selection to identify optimal linear detrending regressors for light-curve fitting across multiple instruments. The method is mainly designed with CHEOPS in mind, but it can be used for other instruments.
+
+```python
+from krithika import SelectLinDetrend
+import numpy as np
+
+# Prepare data per instrument
+time = {'CHEOPS1': np.linspace(0, 100, 1000), 'CHEOPS2': np.linspace(0, 100, 1000)}
+flux = {'CHEOPS1': np.random.randn(1000) * 0.001 + 1, 'CHEOPS2': np.random.randn(1000) * 0.002 + 1}
+flux_err = {'CHEOPS1': np.ones(1000) * 0.001, 'CHEOPS2': np.ones(1000) * 0.002}
+roll_angle = {'CHEOPS1': np.random.uniform(0,360,1000), 'CHEOPS2': np.random.uniform(0,360,1000)}
+
+# Define priors
+def get_priors(instrument):
+    ## juliet compatible priors
+    par = ['P_p1', 't0_p1', 'p_p1', 'b_p1', 'q1_' + instrument, 'q2_' + instrument, 'ecc_p1', 'omega_p1', 'a_p1']
+    dist = ['fixed', 'fixed', 'uniform', 'fixed', 'uniform', 'uniform', 'fixed', 'fixed', 'fixed']
+    hypers = [1.0, 0.0, [0., 0.1], 0.0, [0., 1.], [0., 1.], 0., 90., 10.]
+
+    par = par + ['GP_sigma_' + ins, 'GP_rho_' + ins]
+    dist = dist + ['loguniform', 'loguniform']
+    hypers = hypers + [[1e-3, 1e2], [1, 500]]
+    return par, dist, hypers
+
+# Define linear regressors
+linear_regressors = {
+    'CHEOPS1': {'time': time['CHEOPS1'], 'time_sq': time['CHEOPS1']**2},
+    'CHEOPS2': {'time': time['CHEOPS2'], 'time_sq': time['CHEOPS2']**2}
+}
+
+# Create selector and run optimization
+selector = SelectLinDetrend(
+    time=time,
+    flux=flux,
+    flux_err=flux_err,
+    priors=get_priors,
+    linear_regressors=linear_regressors,
+    roll_degree=3,
+    roll=roll_angle,
+    pout="./detrend_results"
+)
+
+# Find optimal regressors (using lnZ -- Bayesian evidence -- as a selection criteria)
+selected_regressors = selector.select_optimal_parameters(n_parallel=4, delta_lnZ_threshold=2.0, selection_method='lnZ')
+
+# Find optimal regressors (using  scatter in the residuals as a selection criteria)
+selected_regressors = selector.select_optimal_parameters(n_parallel=4, selection_method='scatter')
+```
+
+Please read the API documentation for more details.
+
 
 ## Modules & Classes
 
@@ -322,6 +377,15 @@ Interactive viewer for 2D/3D/4D image cubes.
 Compute brightness temperature from eclipse depths.
 
 - `compute()` — run calculation and return temperature(s) using multi-processing, if an array for `fp` is provided.
+
+---
+
+### `SelectLinDetrend`
+Select optimal linear detrending regressors using Bayesian model selection.
+
+- `select_optimal_parameters()` — iteratively identify best combination of linear regressors by maximizing log-evidence  
+- Supports multi-instrument datasets with parallel fitting  
+- Automatically generates Fourier series regressors from roll angle data  
 
 ---
 
