@@ -6392,16 +6392,16 @@ class SelectLinDetrend(object):
 
         return res.posteriors['lnZ'], mads_all
 
-    def select_optimal_parameters(self, n_parallel=1, delta_lnZ_threshold=2.0):
+    def select_optimal_parameters(self, n_parallel=1, delta_lnZ_threshold=2.0,
+                                   selection_method='lnZ', scatter_threshold=5.0):
         """
         Select optimal linear detrending vectors using forward selection based on
-        Bayesian evidence.
+        Bayesian evidence or light-curve scatter.
 
         The algorithm starts with a base model that has no linear regressors and
-        iteratively adds the vector that yields the greatest improvement in log-evidence.
-        A vector is only accepted if it raises the log-evidence by at least
-        delta_lnZ_threshold units over the previous best model. The search stops
-        when no remaining vector meets this threshold.
+        iteratively adds the vector that yields the greatest improvement according
+        to the chosen selection metric. The search stops when no remaining vector
+        clears the acceptance threshold.
 
         Unique regressor names are collected across all instruments. When a regressor
         is selected it is included for every instrument that carries it; instruments
@@ -6421,10 +6421,27 @@ class SelectLinDetrend(object):
             that no part of this instance (including the potentially un-picklable
             priors callable) needs to be serialised.
         delta_lnZ_threshold : float, optional
-            Minimum improvement in log-evidence required to accept a new regressor.
-            A candidate is added to the model only if its lnZ exceeds the current
-            base model's lnZ by at least this value. Default is 2.0, which
-            corresponds to "strong evidence" on the Jeffreys scale.
+            Minimum improvement in log-evidence required to accept a new regressor
+            when selection_method='lnZ'. A candidate is added only if its lnZ
+            exceeds the current base model's lnZ by at least this value. Default
+            is 2.0, which corresponds to "strong evidence" on the Jeffreys scale.
+            Ignored when selection_method='scatter'.
+        selection_method : {'lnZ', 'scatter'}, optional
+            Metric used to rank and accept candidate regressors.
+
+            * ``'lnZ'`` (default) — select the regressor that maximises the
+              Bayesian log-evidence improvement. Works for any number of
+              instruments.
+            * ``'scatter'`` — select the regressor that minimises the MAD
+              scatter of the residuals for the single instrument. If more than
+              one instrument is provided this option is not supported and the
+              method automatically falls back to ``'lnZ'`` with a warning.
+        scatter_threshold : float, optional
+            Minimum reduction in scatter (in ppm) required to accept a new
+            regressor when selection_method='scatter'. A candidate is accepted
+            only if its residual scatter is at least this many ppm lower than
+            the current base model's scatter. Default is 5.0 ppm. Ignored when
+            selection_method='lnZ'.
 
         Returns
         -------
@@ -6437,6 +6454,20 @@ class SelectLinDetrend(object):
         scatter_history : list
             Scatter (MAD) values at each accepted step (index 0 is the base model).
         """
+        # Validate selection_method; fall back to 'lnZ' for multi-instrument scatter
+        if selection_method not in ('lnZ', 'scatter'):
+            raise ValueError(
+                f"selection_method must be 'lnZ' or 'scatter', got {selection_method!r}"
+            )
+        if selection_method == 'scatter' and len(self.instruments) > 1:
+            import warnings
+            warnings.warn(
+                "selection_method='scatter' is not supported for multiple instruments; "
+                "falling back to selection_method='lnZ'.",
+                UserWarning, stacklevel=2,
+            )
+            selection_method = 'lnZ'
+
         # Collect all unique regressor names across all instruments
         all_regressor_names = set()
         for ins in self.instruments:
@@ -6448,7 +6479,11 @@ class SelectLinDetrend(object):
         base_out_dir = os.path.join(self.pout, 'linsel_base')
         print("Fitting base model (no linear regressors)...")
         base_lnZ, base_scatter = self._fit_model(lin_reg_none, base_out_dir)
-        print(f"  Base model lnZ = {base_lnZ:.2f}")
+        if selection_method == 'scatter':
+            current_scatter_val = base_scatter[0]
+            print(f"  Base model lnZ = {base_lnZ:.2f},  scatter = {current_scatter_val:.2f} ppm")
+        else:
+            print(f"  Base model lnZ = {base_lnZ:.2f}")
 
         selected_names = []
         current_lnZ    = base_lnZ
@@ -6517,7 +6552,11 @@ class SelectLinDetrend(object):
                         name = future_to_name[future]
                         lnZ, scatter = future.result()
                         results[name] = (lnZ, scatter)
-                        print(f"  Tested '{name}': lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+                        if selection_method == 'scatter':
+                            print(f"  Tested '{name}': lnZ = {lnZ:.2f},  scatter = {scatter[0]:.2f} ppm  "
+                                  f"(current base: {current_scatter_val:.2f} ppm)")
+                        else:
+                            print(f"  Tested '{name}': lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
             else:
                 for name, _, out_dir in candidates:
                     candidate_names = selected_names + [name]
@@ -6533,50 +6572,85 @@ class SelectLinDetrend(object):
                     print(f"  Testing '{name}': {candidate_names}")
                     lnZ, scatter = self._fit_model(lin_reg, out_dir, nthreads=nthreads_per_worker)
                     results[name] = (lnZ, scatter)
-                    print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+                    if selection_method == 'scatter':
+                        print(f"    lnZ = {lnZ:.2f},  scatter = {scatter[0]:.2f} ppm  "
+                              f"(current base: {current_scatter_val:.2f} ppm)")
+                    else:
+                        print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
 
-            # Record this round for the summary table. 'selected' is filled in
-            # below if a candidate clears the evidence threshold.
+            # Record this round for the summary table. 'selected' is filled in below.
+            base_scatter_val = current_scatter_val if selection_method == 'scatter' else None
             all_rounds.append({
-                'round_num':  len(all_rounds) + 1,
-                'base_set':   list(selected_names),   # snapshot before this round
-                'base_lnZ':   current_lnZ,
+                'round_num':        len(all_rounds) + 1,
+                'base_set':         list(selected_names),
+                'base_lnZ':         current_lnZ,
+                'base_scatter_val': base_scatter_val,
+                'selection_method': selection_method,
                 'candidates': {
                     name: {
-                        'lnZ':       lnZ,
-                        'scatter':   scatter,
-                        'delta_lnZ': lnZ - current_lnZ,
+                        'lnZ':           lnZ,
+                        'scatter':       scatter,
+                        'delta_lnZ':     lnZ - current_lnZ,
+                        'delta_scatter': (base_scatter_val - scatter[0])
+                                         if selection_method == 'scatter' else None,
                     }
                     for name, (lnZ, scatter) in results.items()
                 },
                 'selected': None,
             })
 
-            # Find the best candidate
-            best_lnZ     = -np.inf
-            best_name    = None
-            best_scatter = None
-            for name, (lnZ, scatter) in results.items():
-                if lnZ > best_lnZ:
-                    best_lnZ     = lnZ
-                    best_name    = name
-                    best_scatter = scatter
-
-            # Accept only if improvement meets the evidence threshold
-            if best_lnZ - current_lnZ >= delta_lnZ_threshold:
-                print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
-                all_rounds[-1]['selected'] = best_name
-                selected_names.append(best_name)
-                remaining_names.remove(best_name)
-                current_lnZ = best_lnZ
-                lnZ_history.append(best_lnZ)
-                scatter_history.append(best_scatter)
+            # Find best candidate and accept if threshold is met
+            if selection_method == 'scatter':
+                best_scatter_val = np.inf
+                best_name        = None
+                best_lnZ         = None
+                best_scatter     = None
+                for name, (lnZ, scatter) in results.items():
+                    if scatter[0] < best_scatter_val:
+                        best_scatter_val = scatter[0]
+                        best_name        = name
+                        best_lnZ         = lnZ
+                        best_scatter     = scatter
+                delta_scatter = current_scatter_val - best_scatter_val
+                if delta_scatter >= scatter_threshold:
+                    print(f"  Accepted '{best_name}' (scatter reduction = {delta_scatter:.2f} ppm)")
+                    all_rounds[-1]['selected'] = best_name
+                    selected_names.append(best_name)
+                    remaining_names.remove(best_name)
+                    current_scatter_val = best_scatter_val
+                    current_lnZ         = best_lnZ
+                    lnZ_history.append(best_lnZ)
+                    scatter_history.append(best_scatter)
+                else:
+                    print(
+                        f"  No regressor reduced scatter by >= {scatter_threshold} ppm "
+                        f"(best reduction = {delta_scatter:.2f} ppm). Stopping."
+                    )
+                    break
             else:
-                print(
-                    f"  No regressor improved lnZ by >= {delta_lnZ_threshold} "
-                    f"(best delta = {best_lnZ - current_lnZ:.2f}). Stopping."
-                )
-                break
+                # lnZ-based selection
+                best_lnZ     = -np.inf
+                best_name    = None
+                best_scatter = None
+                for name, (lnZ, scatter) in results.items():
+                    if lnZ > best_lnZ:
+                        best_lnZ     = lnZ
+                        best_name    = name
+                        best_scatter = scatter
+                if best_lnZ - current_lnZ >= delta_lnZ_threshold:
+                    print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
+                    all_rounds[-1]['selected'] = best_name
+                    selected_names.append(best_name)
+                    remaining_names.remove(best_name)
+                    current_lnZ = best_lnZ
+                    lnZ_history.append(best_lnZ)
+                    scatter_history.append(best_scatter)
+                else:
+                    print(
+                        f"  No regressor improved lnZ by >= {delta_lnZ_threshold} "
+                        f"(best delta = {best_lnZ - current_lnZ:.2f}). Stopping."
+                    )
+                    break
 
         # ── Final summary table ──────────────────────────────────────────────────
         col_name_w = max(len(n) for n in list(all_regressor_names) + ['[base model]']) + 4
@@ -6585,8 +6659,9 @@ class SelectLinDetrend(object):
         col_scat_w = 12
         col_stat_w = 14
 
+        delta_col_label = 'delta scat' if selection_method == 'scatter' else 'delta lnZ'
         header_parts  = [f"{'Regressor':<{col_name_w}}", f"{'lnZ':>{col_lnz_w}}",
-                         f"{'delta lnZ':>{col_dlnz_w}}"]
+                         f"{delta_col_label:>{col_dlnz_w}}"]
         header_parts += [f"{(ins + ' (ppm)'):>{col_scat_w}}" for ins in self.instruments]
         header_parts += [f"{'Status':<{col_stat_w}}"]
         header  = ' | '.join(header_parts)
@@ -6594,7 +6669,7 @@ class SelectLinDetrend(object):
                              + ['-' * col_scat_w] * len(self.instruments)
                              + ['-' * col_stat_w])
         total_w = len(header)
-        title   = 'Linear Detrending Selection Summary'
+        title   = f'Linear Detrending Selection Summary  [method: {selection_method}]'
 
         def _fmt_row(marker, name, lnZ, delta_str, scatter_list, status):
             label = f"{marker}{name}"
@@ -6619,18 +6694,36 @@ class SelectLinDetrend(object):
         for rd in all_rounds:
             base_set_str = '[' + ', '.join(rd['base_set']) + ']' if rd['base_set'] else 'none'
             lines.append(sep)
-            lines.append(f"  Round {rd['round_num']}  "
-                         f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})")
+            if selection_method == 'scatter':
+                lines.append(
+                    f"  Round {rd['round_num']}  "
+                    f"(base set: {base_set_str},  base scatter = {rd['base_scatter_val']:.2f} ppm)"
+                )
+            else:
+                lines.append(
+                    f"  Round {rd['round_num']}  "
+                    f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})"
+                )
             lines.append(sep)
-            # Selected candidate first, then remainder sorted by lnZ descending
-            ordered = sorted(
-                rd['candidates'].keys(),
-                key=lambda n: (n != rd['selected'], -rd['candidates'][n]['lnZ'])
-            )
+            # Selected candidate first; remainder sorted ascending scatter or descending lnZ
+            if selection_method == 'scatter':
+                ordered = sorted(
+                    rd['candidates'].keys(),
+                    key=lambda n: (n != rd['selected'], rd['candidates'][n]['scatter'][0])
+                )
+            else:
+                ordered = sorted(
+                    rd['candidates'].keys(),
+                    key=lambda n: (n != rd['selected'], -rd['candidates'][n]['lnZ'])
+                )
             for name in ordered:
                 r = rd['candidates'][name]
-                dlnZ = r['delta_lnZ']
-                delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
+                if selection_method == 'scatter':
+                    dscat = r['delta_scatter']
+                    delta_str = f"+{dscat:.2f}" if dscat >= 0 else f"{dscat:.2f}"
+                else:
+                    dlnZ = r['delta_lnZ']
+                    delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
                 if name == rd['selected']:
                     marker, status = '>> ', 'SELECTED'
                 else:
