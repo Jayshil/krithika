@@ -11,6 +11,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import root, fsolve
 import matplotlib
 import multiprocessing
+import concurrent.futures
 from pathlib import Path
 from glob import glob
 from tqdm import tqdm
@@ -1588,7 +1589,7 @@ class julietPlots(object):
 
         return figs_all, axs_all, binsize_all, noise_all, white_noise_all
     
-    def plot_corner(self, planet_only=False, save=True):
+    def plot_corner(self, planet_only=False, param_list=None, save=True):
         """Create a corner plot of selected posterior parameters.
 
 
@@ -1598,6 +1599,10 @@ class julietPlots(object):
             If ``True``, include only planetary parameters in the corner
             plot. If ``False`` (default), include instrumental and noise
             parameters as well when available.
+        param_list : list of str or None, optional
+            If provided, a list of parameter names to include in the corner
+            plot. If ``None`` (default), all parameters are included (subject
+            to the ``planet_only`` filter).
         save : bool, optional
             If ``True`` (default), save the generated figure to
             ``<input_folder>/corner_plot.png``.
@@ -1616,6 +1621,8 @@ class julietPlots(object):
         # Arrays for posteriors and labels
         posteriors, labels, titles = [], [], []
         for i in post_samps.keys():
+            if param_list is not None and i not in param_list:
+                continue
             par = i.split('_')
             if ( 'p1' in par ) or ( 'p2' in par ) or ( 'p3' in par ) or ( 'p4' in par ) or ( 'q1' in par ) or ( 'q2' in par ) or ( 'rho' in par ):
                 ## Adding posteriors and labels ( this parameters are added no matter planet_only is True/False)
@@ -1660,8 +1667,8 @@ class julietPlots(object):
                     ## For flux parameters, we will label them as 'instrument_name et al.'
                     posteriors.append( post_samps[i] * 1e6 )
                     titles.append( par[0] )
-                    if len(i.split('_')) > 2:
-                        labels.append('_'.join(i.split('_')[0:2]) + '_et al. [ppm]')
+                    if len(i.split('_')) > 3:
+                        labels.append('_'.join(i.split('_')[0:3]) + '_et al. [ppm]')
                     else:
                         labels.append(i + ' [ppm]')
 
@@ -1691,7 +1698,10 @@ class julietPlots(object):
                 else:
                     ## Else
                     posteriors.append( post_samps[i] )
-                    labels.append( i )
+                    if len(i.split('_')) > 3:
+                        labels.append('_'.join(i.split('_')[0:3]) + '_et al.')
+                    else:
+                        labels.append(i)
                     titles.append( par[0] )
 
             else:
@@ -1699,7 +1709,10 @@ class julietPlots(object):
                 if not planet_only:
                     if ( i[0:7] != 'unnamed' ) and ( i[0:7] != 'loglike' ):
                         posteriors.append( post_samps[i] )
-                        labels.append( i )
+                        if len(i.split('_')) > 3:
+                            labels.append('_'.join(i.split('_')[0:3]) + '_et al.')
+                        else:
+                            labels.append(i)
                         titles.append( par[0] )
         
         # ------------------------------------------
@@ -2919,7 +2932,7 @@ class ApPhoto(object):
         """
         fig, axs = plt.subplots(nrows=int(nmax), ncols=1, figsize=(15,10), sharex=True)
         for i in range(int(nmax)):
-            axs[i].plot(self.times - self.times[0], self.PCA[i,:], 'k-')
+            axs[i].plot(self.times - self.times[0], self.PCA[i,:], 'k-', lw=1.)
             axs[i].set_ylabel('PC ' + str(i+1))
             med, std = np.nanmedian(self.PCA[i,:]), mad_std(self.PCA[i,:])
             axs[i].set_ylim([med-4*std, med+4*std])
@@ -3057,7 +3070,7 @@ class ApPhoto(object):
             axs.axvline(n_pc_of_min_scat, color='dimgrey', ls='--', lw=1.)
             
             axs.set_xlabel('Number of PCs included')
-            axs.set_ylabel('Median Absolute Deviation')
+            axs.set_ylabel('Median Absolute Deviation [ppm]')
 
             axs.set_xlim([ np.min(pcs_to_include), np.max(pcs_to_include) ])
             plt.grid()
@@ -5922,3 +5935,826 @@ class InvertCowanAgolPC(object):
         print('>>> --- Bond albedo: {:.3f} (+{:.3f}/-{:.3f})'.format( np.median( A_Bond_all ), np.percentile( A_Bond_all, 84 ) - np.median( A_Bond_all ), np.median( A_Bond_all ) - np.percentile( A_Bond_all, 16 ) ) )
 
         return A_Bond_all
+
+
+# ---------------------------------------------------------------------------
+# Module-level worker for SelectLinDetrend.select_optimal_parameters
+# ---------------------------------------------------------------------------
+# It lives at module scope so that concurrent.futures.ProcessPoolExecutor can
+# pickle it without ever needing to serialise the SelectLinDetrend instance
+# (which may hold un-picklable attributes such as a closure for 'priors').
+def _lindetrend_worker(worker_args):
+    (instruments, tim_s, fl_s, fle_s, gp_pars_s,
+     lin_pars, cached_priors, out_dir,
+     juliet_fit_kwargs, noise_method) = worker_args
+
+    noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad}
+    noise_func = noise_mapping[noise_method]
+
+    # Build full prior lists from cached base priors + linear regressor priors
+    par_tot, dist_tot, hyper_tot = [], [], []
+    for ins in instruments:
+        par_ins, dist_ins, hyper_ins = cached_priors[ins]
+        par_tot  += list(par_ins)  + ['mdilution_' + ins, 'mflux_' + ins, 'sigma_w_' + ins]
+        dist_tot += list(dist_ins) + ['fixed', 'normal', 'loguniform']
+        hyper_tot += list(hyper_ins) + [1.0, [0., 0.1], [0.1, 1e4]]
+        if lin_pars is not None and lin_pars.get(ins) is not None:
+            for pc in range(lin_pars[ins].shape[1]):
+                par_tot.append('theta' + str(pc) + '_' + ins)
+                dist_tot.append('uniform')
+                hyper_tot.append([-1, 1])
+
+    priors = juliet.utils.generate_priors(par_tot, dist_tot, hyper_tot)
+
+    data = juliet.load(
+        priors=priors,
+        t_lc=tim_s, y_lc=fl_s, yerr_lc=fle_s,
+        linear_regressors_lc=lin_pars,
+        GP_regressors_lc=gp_pars_s,
+        out_folder=out_dir,
+    )
+    res = data.fit(sampler='dynamic_dynesty', **juliet_fit_kwargs)
+
+    mads_all = []
+    for ins in instruments:
+        model_lc = res.lc.evaluate(instrument=ins)
+        residuals = fl_s[ins] - model_lc
+        mads_all.append(noise_func(residuals) * 1e6)
+
+    return res.posteriors['lnZ'], mads_all
+
+
+class SelectLinDetrend(object):
+    """Select optimal linear detrending vectors using model selection with Bayesian evidence.
+
+    This class provides tools to systematically identify the best combination of
+    linear detrending regressors (e.g., time polynomials, roll angle modulation,
+    background variations) for multi-instrument light-curve fitting. It employs
+    model selection based on log-evidence improvements, starting from a base model
+    with no linear regressors and iteratively adding vectors that maximize evidence
+    gain. A regressor is accepted only if it improves log-evidence by at least
+    2 units; the search terminates when no remaining regressor meets this threshold.
+
+    The class interfaces with the ``juliet`` package for Bayesian model fitting and supports
+    parallel processing of model comparisons through concurrent fitting. It automatically
+    handles multi-instrument datasets where different instruments may have different
+    numbers and types of regressors available.
+
+    Linear regressors can be passed directly or be generated from roll angle values via
+    Fourier series expansion. All data (time, flux, errors, regressors) are expected
+    as per-instrument dictionaries, enabling straightforward multi-instrument analysis.
+
+    Parameters
+    ----------
+    time : dict
+        Time stamps for each instrument. Keys are instrument names; values are
+        1-D numpy arrays of time points (in BJD or similar). All arrays should
+        have the same length as corresponding ``flux`` and ``flux_err`` arrays.
+    flux : dict
+        Flux (or normalized flux) measurements for each instrument. Keys are
+        instrument names; values are 1-D numpy arrays of flux measurements.
+    flux_err : dict
+        Flux uncertainties for each instrument. Keys are instrument names;
+        values are 1-D numpy arrays of flux uncertainties (same length as flux).
+    priors : callable
+        A function mapping an instrument name (keyword argument ``instrument``)
+        to a tuple of three lists:
+        
+        - param_names : list of str
+          Names of juliet-compatible model parameters (e.g., 't0_p1', 'p_p1', 'P_p1').
+        - distributions : list of str
+          juliet-compatible distribution names (e.g., 'normal', 'uniform', 'loguniform').
+        - hyperparams : list
+          Hyperparameter lists for each distribution. For example, a 'normal' 
+          distribution takes [mean, std], and a 'uniform' takes [lower, upper].
+        
+        The function is called once per instrument during initialization and
+        results are cached internally.
+    linear_regressors : dict
+        Linear regressors to consider for detrending. Keys are instrument names;
+        values are dicts where each key is a regressor name (str) and value is a
+        1-D numpy array (same length as time for that instrument). Examples include
+        'time', 'time^2', 'background', 'systematics', etc.
+        
+        If ``roll_degree`` and ``roll`` are both provided, roll-angle Fourier
+        series regressors ('ROLL_SIN_1', 'ROLL_COS_1', etc.) are automatically
+        added to ``linear_regressors`` during initialization.
+    gp_regressors : dict or None, optional
+        Gaussian Process (GP) regressors to use for systematics fitting. Keys are
+        instrument names; values are 1-D numpy arrays of regressor values
+        (e.g., roll angle, time). If provided, these are sorted
+        and passed to juliet for GP handling. Default is ``None``.
+    roll_degree : int or None, optional
+        Maximum degree of roll-angle Fourier series to include as linear regressors.
+        If provided (and ``roll`` is also provided), Fourier series regressors
+        up to degree ``roll_degree`` are automatically generated and added to
+        ``linear_regressors``. Must be paired with ``roll`` parameter.
+        Default is ``None``.
+    roll : dict or None, optional
+        Roll angle values (in degrees) for each instrument. Keys are instrument
+        names; values are 1-D numpy arrays of roll angles. Required only if
+        ``roll_degree`` is specified. Default is ``None``.
+    noise_method : str, optional
+        Method to compute noise/scatter in residuals. Options are:
+        
+        - 'astropy' : Uses median absolute deviation (astropy.stats.mad_std).
+        - 'std' : Uses standard deviation (numpy.std).
+        - 'pipe' : Uses the PIPE photometric uncertainty (pipe_mad function).
+        
+        This method is applied to residuals after each model fit to estimate
+        per-instrument noise levels. Default is ``'astropy'``.
+    juliet_fit_kwargs : dict, optional
+        Additional keyword arguments to pass to ``juliet.fit()`` during model fits.
+        For example, ``{'sampler': 'dynamic_dynesty', 'nlive': 500}``.
+        Default is an empty dict ``{}``.
+    nthreads : int, optional
+        Total number of CPU threads available for fitting. Shared among parallel
+        workers if ``n_parallel > 1`` is used in :meth:`select_optimal_parameters`.
+        Default is the total number of available CPU cores.
+    pout : str, optional
+        Output directory for saving juliet fit results. Each model fit creates
+        a subdirectory named after the included regressors (e.g., 'linsel_base',
+        'linsel_time', 'linsel_time_background'). Default is the current working
+        directory.
+
+    Attributes
+    ----------
+    time, flux, flux_err : dict
+        Stored input light-curve data (per-instrument).
+    instruments : list of str
+        Extracted list of instrument names from the keys of ``time`` dict.
+    priors : callable
+        Stored prior function.
+    linear_regressors : dict
+        Stored linear regressors (or regressors with added roll terms if
+        ``roll_degree`` was provided).
+    GP_regressors : dict or None
+        Stored GP regressors.
+    roll_degree, roll : int or None, dict or None
+        Stored roll parameters.
+    noise_method : str
+        Stored noise method name.
+    noise_func : callable
+        Cached noise function (e.g., mad_std, np.std, rms, or pipe_mad).
+    juliet_fit_kwargs : dict
+        Stored juliet fitting kwargs.
+    nthreads : int
+        Stored thread count.
+    pout : str
+        Stored output directory.
+    _sort_idx, _tim_s, _fl_s, _fle_s : dict
+        Per-instrument sort indices and sorted data arrays (cached by :meth:`_precompute`).
+    _gp_pars_s, _gp_pars_s_juliet : dict or None
+        Cached GP regressor arrays (sorted, or None if not applicable).
+    _cached_priors : dict
+        Per-instrument prior tuples cached from the priors callable.
+
+    Main Methods
+    ----------
+    select_optimal_parameters(n_parallel=1)
+        Execute forward selection to identify optimal linear detrending vectors
+        based on log-evidence maximization.
+
+    Notes
+    -----
+    - All fitting is performed using the ``juliet`` Bayesian fitting package.
+    - Log-evidence improvements are computed via ``juliet.fit()`` and returned
+      as ``posteriors['lnZ']``.
+    - The model selection algorithm is greedy: it selects the regressor with
+      the maximum evidence gain at each step, then moves to the next round.
+    - A regressor is accepted only if it improves log-evidence by >= delta_lnZ_threshold
+      (default 2.0). This threshold reflects a Bayes factor of ~exp(2) ≈ 7.4, corresponding to
+      "strong" evidence in Bayesian hypothesis testing.
+    - When ``n_parallel > 1`` in :meth:`select_optimal_parameters`, concurrent
+      fitting is performed using ``concurrent.futures.ProcessPoolExecutor``. To
+      keep total thread usage under control, the per-worker nthreads budget is
+      automatically adjusted as ``nthreads // n_parallel``.
+    - Roll-angle Fourier series regressors (if generated) follow the naming
+      convention 'ROLL_SIN_k' and 'ROLL_COS_k' for degree k = 1, 2, ..., roll_degree.
+    - Regressors that do not exist for a particular instrument (e.g., a regressor
+      available only for one camera in a multi-camera setup) are automatically
+      skipped for that instrument during model construction.
+    - All per-instrument data (time, flux, errors, regressors) are length-checked
+      during juliet loading but not explicitly in __init__. Ensure consistency
+      before instantiation.
+
+    Examples
+    --------
+    Basic forward selection with two instruments:
+
+    >>> import numpy as np
+    >>> time = {
+    ...     'camera_1': np.linspace(2459000, 2459001, 200),
+    ...     'camera_2': np.linspace(2459000, 2459001, 150),
+    ... }
+    >>> flux = {
+    ...     'camera_1': 1.0 + 0.01 * np.random.randn(200),
+    ...     'camera_2': 1.0 + 0.005 * np.random.randn(150),
+    ... }
+    >>> flux_err = {
+    ...     'camera_1': np.full(200, 0.005),
+    ...     'camera_2': np.full(150, 0.003),
+    ... }
+    >>> linear_regressors = {
+    ...     'camera_1': {
+    ...         'time': time['camera_1'],
+    ...         'time^2': time['camera_1']**2,
+    ...     },
+    ...     'camera_2': {
+    ...         'time': time['camera_2'],
+    ...         'time^2': time['camera_2']**2,
+    ...     },
+    ... }
+    >>> def priors_func(instrument):
+    ...     return (['t0_p1', 'p_p1', 'P_p1'], 
+    ...             ['normal', 'normal', 'uniform'],
+    ...             [[2459000.5, 0.1], [3.5, 0.01], [0.01, 0.1]])
+    >>> 
+    >>> selector = SelectLinDetrend(
+    ...     time=time,
+    ...     flux=flux,
+    ...     flux_err=flux_err,
+    ...     priors=priors_func,
+    ...     linear_regressors=linear_regressors,
+    ...     pout='/path/to/results'
+    ... )
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters(n_parallel=2)
+
+    With roll-angle detrending:
+
+    >>> roll_angles = {
+    ...     'camera_1': np.random.uniform(0, 360, 200),
+    ...     'camera_2': np.random.uniform(0, 360, 150),
+    ... }
+    >>> selector = SelectLinDetrend(
+    ...     time=time,
+    ...     flux=flux,
+    ...     flux_err=flux_err,
+    ...     priors=priors_func,
+    ...     linear_regressors=linear_regressors,
+    ...     roll_degree=3,
+    ...     roll=roll_angles,
+    ...     pout='/path/to/results'
+    ... )
+    >>> # Now linear_regressors includes 'ROLL_SIN_1', 'ROLL_COS_1', ..., 'ROLL_SIN_3', 'ROLL_COS_3'
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters()
+
+    It is possible to use scatter in the residuals (instead of log-evidence) for model selection by setting selection_method='scatter' in select_optimal_parameters. In this case, the regressor that minimizes the scatter (as computed by noise_method) is selected at each step.
+
+    >>> # Using scatter-based selection instead of log-evidence
+    >>> selected_regs, lnZ_hist, scatter_hist = selector.select_optimal_parameters(selection_method='scatter')
+    """
+    def __init__(self, time, flux, flux_err, priors, linear_regressors, gp_regressors=None, roll_degree=None, roll=None, noise_method='astropy', juliet_fit_kwargs={}, nthreads=multiprocessing.cpu_count(), pout=os.getcwd() ):
+        # Time, flux, and flux_err are the light curve data. All of them are dict with keys of instrument name.
+        self.time = time
+        self.flux = flux
+        self.flux_err = flux_err
+
+        # Extracting an instrument list
+        self.instruments = list( self.time.keys() )
+
+        # Priors; it is a function with only keyword is the name of the instrument.
+        # It should return a tuple of lists, where the first list is the list of parameter names, second is the list of distributions, and the third is the hyperparameters for the distributions.
+        self.priors = priors
+
+        # linear_regressors is a dict where the keys are the names of the instruments, and values are again dict where keys
+        # now are the name of the linear regressors (e.g., 'time', 'time^2', 'background', etc.) and values are numpy arrays of 
+        # the same length as time, flux, and flux_err. These arrays represent the values of the linear regressors at each time point.
+        self.linear_regressors = linear_regressors
+
+        # GP_regressors is a dict where the keys are the names of the instruments
+        self.GP_regressors = gp_regressors
+
+        # The roll_degree parameter indicates the maximum degree of the roll angle Fourier series to include in the linear model.
+        self.roll_degree = roll_degree
+
+        # If we are going to include the roll angle as a linear regressor, then we need to have the roll angle values for each time point.
+        # It should be a dict where the keys are the names of the instruments and values are numpy arrays of the same length as 
+        # time, flux, and flux_err. These arrays represent the roll angle values at each time point.
+        self.roll = roll
+
+        if self.roll_degree is not None and self.roll is not None:
+            # This means that we will be including the roll angle as a linear regressor, so we need to create the regressors for the roll angle modulation and include them in self.linear_regressors.
+            # Let's adjust the self.linear_regressors to include the roll angle regressors if GP_roll is False
+            self._roll_model_sine()
+        elif ( self.roll_degree is None) or (self.roll is None):
+            # This means that the user wants to include Roll angles as linear regressors but they forgot to provide either the roll_degree or the roll angle values. We will raise an error in this case.
+            if (self.roll_degree is not None) and (self.roll is None):
+                raise ValueError("roll_degree is provided but roll angle values are not provided. Please provide the roll angle values or set roll_degree to None.")
+            elif (self.roll_degree is None) and (self.roll is not None):
+                raise ValueError("roll angle values are provided but roll_degree is not provided. Please provide the roll_degree or set roll to None.")
+        else:
+            # Both roll_degree and roll are None, which means that we will be including the roll angle as a Gaussian process regressor, so we don't need to include it as a linear regressor.
+            # We assume that the use have alreadey included the roll angle as a GP regressor in self.GP_regressors, so we don't need to do anything here.
+            # Just a sanity check to make sure that the roll angle is included in the GP regressors.
+            if self.GP_regressors is None:
+                print("GP_regressors must be provided if roll angle modulation is desired to be fitted with a GP.")
+
+        # Noise method to use for calculating the scatter in residuals
+        noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad, 'rms': rms}
+        if noise_method not in noise_mapping:
+            raise ValueError("Invalid noise method. Please choose from 'astropy', 'std', 'pipe', or 'rms'.")
+        self.noise_method = noise_method          # stored as string for worker pickling
+        self.noise_func   = noise_mapping[noise_method]
+
+        # Finally, we will save any extra juliet fit kwargs to be used in the juliet fitting later.
+        # This argument will be provided to juliet.fit() function when we fit the model to the data.
+        self.juliet_fit_kwargs = juliet_fit_kwargs
+
+        # Cores to use for juliet fitting
+        self.nthreads = nthreads
+
+        # Output directory to save the juliet fit results
+        self.pout = pout
+
+        # Pre-compute sort indices, sorted data arrays, and cached prior values
+        # so that _fit_model and parallel workers never redo this work.
+        self._precompute()
+
+    def _precompute(self):
+        # Cache per-instrument sort indices, pre-sorted data, GP regressors, and
+        # prior data so this work is done exactly once rather than once per fit.
+        self._sort_idx = {}
+        self._tim_s    = {}
+        self._fl_s     = {}
+        self._fle_s    = {}
+        self._gp_pars_s = {}
+
+        for ins in self.instruments:
+            gp_reg = self.GP_regressors[ins] if self.GP_regressors is not None else None
+            if gp_reg is not None:
+                idx = np.argsort(gp_reg)
+                self._gp_pars_s[ins] = gp_reg[idx]
+            else:
+                idx = np.arange(len(self.time[ins]))
+                self._gp_pars_s[ins] = None
+
+            self._sort_idx[ins] = idx
+            self._tim_s[ins]    = self.time[ins][idx]
+            self._fl_s[ins]     = self.flux[ins][idx]
+            self._fle_s[ins]    = self.flux_err[ins][idx]
+
+        # Collapse gp_pars: None if all instruments lack GP regressors,
+        # otherwise keep only the instruments that have them.
+        if all(v is None for v in self._gp_pars_s.values()):
+            self._gp_pars_s_juliet = None
+        else:
+            self._gp_pars_s_juliet = {k: v for k, v in self._gp_pars_s.items() if v is not None}
+
+        # Cache prior data per instrument (lists/tuples of plain data → picklable)
+        self._cached_priors = {}
+        for ins in self.instruments:
+            self._cached_priors[ins] = self.priors(instrument=ins)
+
+    def _roll_model_sine(self):
+        # This helper function creates the regressors for roll angle modulation for maximum degree of roll_degree.
+        # Eventually the regressors are saved in self.linear_regressors with keys 'ROLL_SIN_1', 'ROLL_COS_1', 'ROLL_SIN_2', 'ROLL_COS_2', ..., 'ROLL_SIN_roll_degree', 'ROLL_COS_roll_degree'.
+        for ins in range( len(self.instruments) ):
+            for i in range(self.roll_degree):
+                self.linear_regressors[self.instruments[ins]][f'ROLL_SIN_{i+1}'] = np.sin( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
+                self.linear_regressors[self.instruments[ins]][f'ROLL_COS_{i+1}'] = np.cos( (i+1) * np.radians( self.roll[self.instruments[ins]] ) )
+
+    def _build_lin_pars(self, lin_reg):
+        """Apply cached sort indices to lin_reg and stack into juliet matrix form.
+
+        Parameters
+        ----------
+        lin_reg : dict
+            {instrument: {regressor_name: array}} or {instrument: None}
+
+        Returns
+        -------
+        lin_pars : dict or None
+            {instrument: 2-D ndarray (n_points x n_regressors)} ready for juliet,
+            or None if every instrument has no regressors.
+        """
+        lin_pars = {}
+        for ins in self.instruments:
+            if lin_reg[ins] is not None:
+                # Sort by GP regressor order; use sorted() for deterministic column order
+                arrs = [lin_reg[ins][k][self._sort_idx[ins]] for k in sorted(lin_reg[ins].keys())]
+                lin_pars[ins] = np.transpose(np.vstack(arrs))
+            else:
+                lin_pars[ins] = None
+        if all(v is None for v in lin_pars.values()):
+            return None
+        return lin_pars
+
+    def _fit_model(self, lin_reg, out_dir, nthreads=None):
+        """Fit the total model using juliet.
+
+        Uses pre-sorted data and cached prior values from _precompute() so no
+        redundant sorting or prior evaluation occurs per call.
+
+        Parameters
+        ----------
+        lin_reg : dict
+            {instrument: {regressor_name: array}} or {instrument: None}
+        out_dir : str
+            Output folder for juliet results.
+        nthreads : int, optional
+            Thread count passed to juliet. Defaults to self.nthreads.
+
+        Returns
+        -------
+        lnZ : float
+        mads_all : list of float
+        """
+        if nthreads is None:
+            nthreads = self.nthreads
+
+        lin_pars = self._build_lin_pars(lin_reg)
+
+        # Build prior lists from cached per-instrument base priors
+        par_tot, dist_tot, hyper_tot = [], [], []
+        for ins in self.instruments:
+            par_ins, dist_ins, hyper_ins = self._cached_priors[ins]
+            par_tot  += list(par_ins)  + ['mdilution_' + ins, 'mflux_' + ins, 'sigma_w_' + ins]
+            dist_tot += list(dist_ins) + ['fixed', 'normal', 'loguniform']
+            hyper_tot += list(hyper_ins) + [1.0, [0., 0.1], [0.1, 1e4]]
+            if lin_pars is not None and lin_pars.get(ins) is not None:
+                for pc in range(lin_pars[ins].shape[1]):
+                    par_tot.append('theta' + str(pc) + '_' + ins)
+                    dist_tot.append('uniform')
+                    hyper_tot.append([-1, 1])
+
+        priors = juliet.utils.generate_priors(par_tot, dist_tot, hyper_tot)
+
+        data = juliet.load(
+            priors=priors,
+            t_lc=self._tim_s, y_lc=self._fl_s, yerr_lc=self._fle_s,
+            linear_regressors_lc=lin_pars,
+            GP_regressors_lc=self._gp_pars_s_juliet,
+            out_folder=out_dir,
+        )
+        res = data.fit(sampler='dynamic_dynesty', nthreads=nthreads, **self.juliet_fit_kwargs)
+
+        mads_all = []
+        for ins in self.instruments:
+            model_lc = res.lc.evaluate(instrument=ins)
+            residuals = self._fl_s[ins] - model_lc
+            mads_all.append(self.noise_func(residuals) * 1e6)
+
+        return res.posteriors['lnZ'], mads_all
+
+    def select_optimal_parameters(self, n_parallel=1, delta_lnZ_threshold=2.0,
+                                   selection_method='lnZ', scatter_threshold=5.0):
+        """
+        Select optimal linear detrending vectors using forward selection based on
+        Bayesian evidence or light-curve scatter.
+
+        The algorithm starts with a base model that has no linear regressors and
+        iteratively adds the vector that yields the greatest improvement according
+        to the chosen selection metric. The search stops when no remaining vector
+        clears the acceptance threshold.
+
+        Unique regressor names are collected across all instruments. When a regressor
+        is selected it is included for every instrument that carries it; instruments
+        that do not have that regressor are left unchanged.
+
+        Parameters
+        ----------
+        n_parallel : int, optional
+            Number of model fits to run concurrently within each selection round.
+            Default is 1 (sequential).
+
+            When n_parallel > 1 the fits in the inner loop are dispatched to a
+            ProcessPoolExecutor for true CPU parallelism (no GIL contention).
+            The juliet nthreads budget is automatically divided by n_parallel so
+            that the total thread count across all workers stays within self.nthreads.
+            The module-level _lindetrend_worker function is used as the callable so
+            that no part of this instance (including the potentially un-picklable
+            priors callable) needs to be serialised.
+        delta_lnZ_threshold : float, optional
+            Minimum improvement in log-evidence required to accept a new regressor
+            when selection_method='lnZ'. A candidate is added only if its lnZ
+            exceeds the current base model's lnZ by at least this value. Default
+            is 2.0, which corresponds to "strong evidence" on the Jeffreys scale.
+            Ignored when selection_method='scatter'.
+        selection_method : {'lnZ', 'scatter'}, optional
+            Metric used to rank and accept candidate regressors.
+
+            * ``'lnZ'`` (default) — select the regressor that maximises the
+              Bayesian log-evidence improvement. Works for any number of
+              instruments.
+            * ``'scatter'`` — select the regressor that minimises the MAD
+              scatter of the residuals for the single instrument. If more than
+              one instrument is provided this option is not supported and the
+              method automatically falls back to ``'lnZ'`` with a warning.
+        scatter_threshold : float, optional
+            Minimum reduction in scatter (in ppm) required to accept a new
+            regressor when selection_method='scatter'. A candidate is accepted
+            only if its residual scatter is at least this many ppm lower than
+            the current base model's scatter. Default is 5.0 ppm. Ignored when
+            selection_method='lnZ'.
+
+        Returns
+        -------
+        selected_regressors : dict
+            Dict with instrument names as keys. Each value is either a dict of
+            {regressor_name: array} for the selected regressors, or None if no
+            regressor was selected for that instrument.
+        lnZ_history : list of float
+            Log-evidence at each accepted step (index 0 is the base model).
+        scatter_history : list
+            Scatter (MAD) values at each accepted step (index 0 is the base model).
+        """
+        # Validate selection_method; fall back to 'lnZ' for multi-instrument scatter
+        if selection_method not in ('lnZ', 'scatter'):
+            raise ValueError(
+                f"selection_method must be 'lnZ' or 'scatter', got {selection_method!r}"
+            )
+        if selection_method == 'scatter' and len(self.instruments) > 1:
+            import warnings
+            warnings.warn(
+                "selection_method='scatter' is not supported for multiple instruments; "
+                "falling back to selection_method='lnZ'.",
+                UserWarning, stacklevel=2,
+            )
+            selection_method = 'lnZ'
+
+        # Collect all unique regressor names across all instruments
+        all_regressor_names = set()
+        for ins in self.instruments:
+            all_regressor_names.update(self.linear_regressors[ins].keys())
+        remaining_names = list(all_regressor_names)
+
+        # --- Step 1: base model (no linear regressors) ---
+        lin_reg_none = {ins: None for ins in self.instruments}
+        base_out_dir = os.path.join(self.pout, 'linsel_base')
+        print("Fitting base model (no linear regressors)...")
+        base_lnZ, base_scatter = self._fit_model(lin_reg_none, base_out_dir)
+        if selection_method == 'scatter':
+            current_scatter_val = base_scatter[0]
+            print(f"  Base model lnZ = {base_lnZ:.2f},  scatter = {current_scatter_val:.2f} ppm")
+        else:
+            print(f"  Base model lnZ = {base_lnZ:.2f}")
+
+        selected_names = []
+        current_lnZ    = base_lnZ
+        lnZ_history     = [base_lnZ]
+        scatter_history = [base_scatter]
+
+        # Stores every round's results for the final per-round summary table.
+        all_rounds = []
+
+        # Per-worker thread budget so total threads ≤ self.nthreads
+        nthreads_per_worker = max(1, self.nthreads // max(1, n_parallel))
+
+        # --- Step 2: forward selection ---
+        while remaining_names:
+
+            # Build candidates: (name, lin_pars, out_dir)
+            # lin_pars is already sorted and stacked — ready to pickle / pass to juliet.
+            candidates = []
+            for name in remaining_names:
+                candidate_names = selected_names + [name]
+                lin_reg = {
+                    ins: {
+                        reg: self.linear_regressors[ins][reg]
+                        for reg in candidate_names
+                        if reg in self.linear_regressors[ins]
+                    } or None
+                    for ins in self.instruments
+                }
+                # Resolve empty dicts to None
+                lin_reg = {ins: (v if v else None) for ins, v in lin_reg.items()}
+                lin_pars = self._build_lin_pars(lin_reg)
+                out_dir = os.path.join(
+                    self.pout,
+                    'linsel_' + '_'.join(sorted(candidate_names))
+                )
+                candidates.append((name, lin_pars, out_dir))
+
+            # Run fits — parallel (ProcessPoolExecutor) or sequential
+            results = {}  # name -> (lnZ, scatter)
+
+            if n_parallel > 1:
+                # juliet_fit_kwargs forwarded to each worker with per-worker nthreads
+                worker_fit_kwargs = dict(self.juliet_fit_kwargs)
+                worker_fit_kwargs['nthreads'] = nthreads_per_worker
+
+                worker_args_list = [
+                    (
+                        self.instruments,
+                        self._tim_s, self._fl_s, self._fle_s,
+                        self._gp_pars_s_juliet,
+                        lin_pars,
+                        self._cached_priors,
+                        out_dir,
+                        worker_fit_kwargs,
+                        self.noise_method,
+                    )
+                    for _, lin_pars, out_dir in candidates
+                ]
+
+                with concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel) as executor:
+                    future_to_name = {
+                        executor.submit(_lindetrend_worker, args): name
+                        for (name, _, _), args in zip(candidates, worker_args_list)
+                    }
+                    for future in concurrent.futures.as_completed(future_to_name):
+                        name = future_to_name[future]
+                        lnZ, scatter = future.result()
+                        results[name] = (lnZ, scatter)
+                        if selection_method == 'scatter':
+                            print(f"  Tested '{name}': lnZ = {lnZ:.2f},  scatter = {scatter[0]:.2f} ppm  "
+                                  f"(current base: {current_scatter_val:.2f} ppm)")
+                        else:
+                            print(f"  Tested '{name}': lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+            else:
+                for name, _, out_dir in candidates:
+                    candidate_names = selected_names + [name]
+                    lin_reg = {
+                        ins: {
+                            reg: self.linear_regressors[ins][reg]
+                            for reg in candidate_names
+                            if reg in self.linear_regressors[ins]
+                        } or None
+                        for ins in self.instruments
+                    }
+                    lin_reg = {ins: (v if v else None) for ins, v in lin_reg.items()}
+                    print(f"  Testing '{name}': {candidate_names}")
+                    lnZ, scatter = self._fit_model(lin_reg, out_dir, nthreads=nthreads_per_worker)
+                    results[name] = (lnZ, scatter)
+                    if selection_method == 'scatter':
+                        print(f"    lnZ = {lnZ:.2f},  scatter = {scatter[0]:.2f} ppm  "
+                              f"(current base: {current_scatter_val:.2f} ppm)")
+                    else:
+                        print(f"    lnZ = {lnZ:.2f}  (current best: {current_lnZ:.2f})")
+
+            # Record this round for the summary table. 'selected' is filled in below.
+            base_scatter_val = current_scatter_val if selection_method == 'scatter' else None
+            all_rounds.append({
+                'round_num':        len(all_rounds) + 1,
+                'base_set':         list(selected_names),
+                'base_lnZ':         current_lnZ,
+                'base_scatter_val': base_scatter_val,
+                'selection_method': selection_method,
+                'candidates': {
+                    name: {
+                        'lnZ':           lnZ,
+                        'scatter':       scatter,
+                        'delta_lnZ':     lnZ - current_lnZ,
+                        'delta_scatter': (base_scatter_val - scatter[0])
+                                         if selection_method == 'scatter' else None,
+                    }
+                    for name, (lnZ, scatter) in results.items()
+                },
+                'selected': None,
+            })
+
+            # Find best candidate and accept if threshold is met
+            if selection_method == 'scatter':
+                best_scatter_val = np.inf
+                best_name        = None
+                best_lnZ         = None
+                best_scatter     = None
+                for name, (lnZ, scatter) in results.items():
+                    if scatter[0] < best_scatter_val:
+                        best_scatter_val = scatter[0]
+                        best_name        = name
+                        best_lnZ         = lnZ
+                        best_scatter     = scatter
+                delta_scatter = current_scatter_val - best_scatter_val
+                if delta_scatter >= scatter_threshold:
+                    print(f"  Accepted '{best_name}' (scatter reduction = {delta_scatter:.2f} ppm)")
+                    all_rounds[-1]['selected'] = best_name
+                    selected_names.append(best_name)
+                    remaining_names.remove(best_name)
+                    current_scatter_val = best_scatter_val
+                    current_lnZ         = best_lnZ
+                    lnZ_history.append(best_lnZ)
+                    scatter_history.append(best_scatter)
+                else:
+                    print(
+                        f"  No regressor reduced scatter by >= {scatter_threshold} ppm "
+                        f"(best reduction = {delta_scatter:.2f} ppm). Stopping."
+                    )
+                    break
+            else:
+                # lnZ-based selection
+                best_lnZ     = -np.inf
+                best_name    = None
+                best_scatter = None
+                for name, (lnZ, scatter) in results.items():
+                    if lnZ > best_lnZ:
+                        best_lnZ     = lnZ
+                        best_name    = name
+                        best_scatter = scatter
+                if best_lnZ - current_lnZ >= delta_lnZ_threshold:
+                    print(f"  Accepted '{best_name}' (delta lnZ = {best_lnZ - current_lnZ:.2f})")
+                    all_rounds[-1]['selected'] = best_name
+                    selected_names.append(best_name)
+                    remaining_names.remove(best_name)
+                    current_lnZ = best_lnZ
+                    lnZ_history.append(best_lnZ)
+                    scatter_history.append(best_scatter)
+                else:
+                    print(
+                        f"  No regressor improved lnZ by >= {delta_lnZ_threshold} "
+                        f"(best delta = {best_lnZ - current_lnZ:.2f}). Stopping."
+                    )
+                    break
+
+        # ── Final summary table ──────────────────────────────────────────────────
+        col_name_w = max(len(n) for n in list(all_regressor_names) + ['[base model]']) + 4
+        col_lnz_w  = 10
+        col_dlnz_w = 11
+        col_scat_w = 12
+        col_stat_w = 14
+
+        delta_col_label = 'delta scat' if selection_method == 'scatter' else 'delta lnZ'
+        header_parts  = [f"{'Regressor':<{col_name_w}}", f"{'lnZ':>{col_lnz_w}}",
+                         f"{delta_col_label:>{col_dlnz_w}}"]
+        header_parts += [f"{(ins + ' (ppm)'):>{col_scat_w}}" for ins in self.instruments]
+        header_parts += [f"{'Status':<{col_stat_w}}"]
+        header  = ' | '.join(header_parts)
+        sep     = '-+-'.join(['-' * col_name_w, '-' * col_lnz_w, '-' * col_dlnz_w]
+                             + ['-' * col_scat_w] * len(self.instruments)
+                             + ['-' * col_stat_w])
+        total_w = len(header)
+        title   = f'Linear Detrending Selection Summary  [method: {selection_method}]'
+
+        def _fmt_row(marker, name, lnZ, delta_str, scatter_list, status):
+            label = f"{marker}{name}"
+            row   = [f"{label:<{col_name_w}}", f"{lnZ:>{col_lnz_w}.2f}",
+                     f"{delta_str:>{col_dlnz_w}}"]
+            row  += [f"{sc:>{col_scat_w}.2f}" for sc in scatter_list]
+            row  += [f"{status:<{col_stat_w}}"]
+            return ' | '.join(row)
+
+        # Build all lines first so they can be printed and saved in one pass
+        lines = []
+        lines.append('\n' + '=' * total_w)
+        lines.append(title.center(total_w))
+        lines.append('=' * total_w)
+        lines.append(header)
+        lines.append(sep)
+
+        # Base model row
+        lines.append(_fmt_row('', '[base model]', base_lnZ, '---', base_scatter, 'base model'))
+
+        # One section per round
+        for rd in all_rounds:
+            base_set_str = '[' + ', '.join(rd['base_set']) + ']' if rd['base_set'] else 'none'
+            lines.append(sep)
+            if selection_method == 'scatter':
+                lines.append(
+                    f"  Round {rd['round_num']}  "
+                    f"(base set: {base_set_str},  base scatter = {rd['base_scatter_val']:.2f} ppm)"
+                )
+            else:
+                lines.append(
+                    f"  Round {rd['round_num']}  "
+                    f"(base set: {base_set_str},  base lnZ = {rd['base_lnZ']:.2f})"
+                )
+            lines.append(sep)
+            # Selected candidate first; remainder sorted ascending scatter or descending lnZ
+            if selection_method == 'scatter':
+                ordered = sorted(
+                    rd['candidates'].keys(),
+                    key=lambda n: (n != rd['selected'], rd['candidates'][n]['scatter'][0])
+                )
+            else:
+                ordered = sorted(
+                    rd['candidates'].keys(),
+                    key=lambda n: (n != rd['selected'], -rd['candidates'][n]['lnZ'])
+                )
+            for name in ordered:
+                r = rd['candidates'][name]
+                if selection_method == 'scatter':
+                    dscat = r['delta_scatter']
+                    delta_str = f"+{dscat:.2f}" if dscat >= 0 else f"{dscat:.2f}"
+                else:
+                    dlnZ = r['delta_lnZ']
+                    delta_str = f"+{dlnZ:.2f}" if dlnZ >= 0 else f"{dlnZ:.2f}"
+                if name == rd['selected']:
+                    marker, status = '>> ', 'SELECTED'
+                else:
+                    marker, status = '   ', 'not selected'
+                lines.append(_fmt_row(marker, name, r['lnZ'], delta_str, r['scatter'], status))
+
+        lines.append('=' * total_w)
+
+        # Print to stdout
+        for line in lines:
+            print(line)
+
+        # Save to file
+        summary_path = os.path.join(self.pout, 'linsel_summary.txt')
+        with open(summary_path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        print(f"  Summary saved to {summary_path}")
+
+        # Build the final selected-regressors dict
+        selected_regressors = {}
+        for ins in self.instruments:
+            reg_dict = {
+                name: self.linear_regressors[ins][name]
+                for name in selected_names
+                if name in self.linear_regressors[ins]
+            }
+            selected_regressors[ins] = reg_dict if reg_dict else None
+
+        return selected_regressors, lnZ_history, scatter_history
