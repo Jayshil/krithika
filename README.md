@@ -380,6 +380,19 @@ Compute brightness temperature from eclipse depths.
 
 ---
 
+### `InvertCowanAgolPC`
+Invert phase curve observations to thermal properties using Cowan & Agol (2008) model.
+
+- `TdayTnight()` — compute dayside and nightside brightness temperatures  
+- `temperature_map_distribution()` — compute 2D temperature map distribution across posterior samples  
+- `median_temperature_map()` — compute and optionally plot median temperature map  
+- `equatorial_temp_map()` — compute and plot temperature along equator  
+- `phase_offsets()` — compute hotspot offset and phase offset from phase curve  
+- `albedo_eps_from_temp_map()` — compute Bond albedo and heat redistribution from temperature maps  
+- `forward_phase_curve_model()` — compute forward-model phase curve from 2D flux distribution  
+
+---
+
 ### `SelectLinDetrend`
 Select optimal linear detrending regressors using Bayesian model selection.
 
