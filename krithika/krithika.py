@@ -6095,7 +6095,7 @@ class SelectLinDetrend(object):
     noise_method : str
         Stored noise method name.
     noise_func : callable
-        Cached noise function (e.g., mad_std, np.std, or pipe_mad).
+        Cached noise function (e.g., mad_std, np.std, rms, or pipe_mad).
     juliet_fit_kwargs : dict
         Stored juliet fitting kwargs.
     nthreads : int
@@ -6246,9 +6246,9 @@ class SelectLinDetrend(object):
                 print("GP_regressors must be provided if roll angle modulation is desired to be fitted with a GP.")
 
         # Noise method to use for calculating the scatter in residuals
-        noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad}
+        noise_mapping = {'astropy': mad_std, 'std': np.std, 'pipe': pipe_mad, 'rms': rms}
         if noise_method not in noise_mapping:
-            raise ValueError("Invalid noise method. Please choose from 'astropy', 'std', or 'pipe'.")
+            raise ValueError("Invalid noise method. Please choose from 'astropy', 'std', 'pipe', or 'rms'.")
         self.noise_method = noise_method          # stored as string for worker pickling
         self.noise_func   = noise_mapping[noise_method]
 
