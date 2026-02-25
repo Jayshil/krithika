@@ -53,4 +53,6 @@ rcParams['legend.fontsize'] = 14
 
 rcParams['mathtext.default'] = 'regular' 
 
+rcParams['figure.dpi'] = 300
+
 ###############################################################
