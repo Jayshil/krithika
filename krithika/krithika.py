@@ -721,7 +721,7 @@ class julietPlots(object):
         
         return all_fig, all_axs1, all_axs2
     
-    def detrend_data(self, phmin, instruments):
+    def detrend_data(self, phmin, instruments, planet='p1'):
         """This function will generate detrended data from the raw data. It will also generate phases."""
         
         # First, create detrended dataset and models
@@ -740,12 +740,12 @@ class julietPlots(object):
             #  period and t0:
             # -----------------------------------------
             try:
-                per = np.nanmedian(self.res.posteriors['posterior_samples']['P_p1'])
+                per = np.nanmedian(self.res.posteriors['posterior_samples']['P_' + planet])
             except:
                 per = self.all_mods_ins[instruments[i]]['params'].per
             
             try:
-                t0 = np.nanmedian(self.res.posteriors['posterior_samples']['t0_p1'])
+                t0 = np.nanmedian(self.res.posteriors['posterior_samples']['t0_' + planet])
             except:
                 t0 = self.all_mods_ins[instruments[i]]['params'].t0
             # -----------------------------------------
@@ -808,7 +808,7 @@ class julietPlots(object):
                 self.ph_minimum = np.min(phases_instrument)
 
     
-    def detrend_model(self, instruments, phmin, highres):
+    def detrend_model(self, instruments, phmin, highres, planet='p1'):
         # If we want to create high-resolution model (highres=True), then we will use the same times for all instruments
         # If not, then we will use different times for different instruments
         self.times_model, self.phases_model = {}, {}
@@ -819,12 +819,12 @@ class julietPlots(object):
         #  period and t0:
         # -----------------------------------------
         try:
-            per = np.nanmedian(self.res.posteriors['posterior_samples']['P_p1'])
+            per = np.nanmedian(self.res.posteriors['posterior_samples']['P_' + planet])
         except:
             per = self.all_mods_ins[instruments[0]]['params'].per
         
         try:
-            t0 = np.nanmedian(self.res.posteriors['posterior_samples']['t0_p1'])
+            t0 = np.nanmedian(self.res.posteriors['posterior_samples']['t0_' + planet])
         except:
             t0 = self.all_mods_ins[instruments[0]]['params'].t0
 
@@ -916,7 +916,7 @@ class julietPlots(object):
                 self.phases_model[instruments[ins]] = juliet.utils.get_phases(t=self.dataset.times_lc[instruments[ins]], P=per, t0=t0, phmin=phmin)
 
     
-    def phase_folded_lc(self, phmin=0.8, instruments=None, highres=False, nrandom=50, quantile_models=True, one_plot=None, figsize=(16/1.5, 9/1.5), pycheops_binning=False, nos_bin_tra=20, nos_bin_pc=30):
+    def phase_folded_lc(self, phmin=0.8, instruments=None, planet='p1', highres=False, nrandom=50, quantile_models=True, one_plot=None, figsize=(16/1.5, 9/1.5), pycheops_binning=False, nos_bin_tra=20, nos_bin_pc=30):
         """Plot phase-folded light curves and models for the fitted dataset.
 
         This method computes detrended data and planetary models by
@@ -936,6 +936,9 @@ class julietPlots(object):
             in the juliet dataset (``self.dataset.inames_lc``) are used. One plot
             is produced if all instruments are provided; otherwise, one plot
             per instrument is created.
+        planet : str, optional
+            Planet identifier used in the juliet fit (e.g., 'p1', 'p2', etc.) to select 
+            the appropriate planet model. Default is 'p1'.
         highres : bool, optional
             If ``True``, compute and plot high time-resolution planet-only
             models. Default ``False``.
@@ -997,13 +1000,13 @@ class julietPlots(object):
 
         ### Orbital period
         try:
-            per = np.nanmedian(self.res.posteriors['posterior_samples']['P_p1'])
+            per = np.nanmedian(self.res.posteriors['posterior_samples']['P_' + planet])
         except:
             per = self.all_mods_ins[instruments[0]]['params'].per
         
         ### Rp/R*
         try:
-            rprs = np.nanmedian(self.res.posteriors['posterior_samples']['p_p1'])
+            rprs = np.nanmedian(self.res.posteriors['posterior_samples']['p_' + planet])
         except:
             rprs = self.all_mods_ins[instruments[0]]['params'].rp
 
@@ -1014,13 +1017,13 @@ class julietPlots(object):
         else:
             ### That means that we directly fit for a/R*
             try:
-                ar = np.nanmedian(self.res.posteriors['posterior_samples']['a_p1'])
+                ar = np.nanmedian(self.res.posteriors['posterior_samples']['a_' + planet])
             except:
                 ar = self.all_mods_ins[instruments[0]]['params'].a
         
         ### b
         try:
-            b = np.nanmedian(self.res.posteriors['posterior_samples']['b_p1'])
+            b = np.nanmedian(self.res.posteriors['posterior_samples']['b_' + planet])
         except:
             inc = self.all_mods_ins[instruments[0]]['params'].inc
             b = inc_to_b(inc=inc, ar=ar, ecc=self.all_mods_ins[instruments[0]]['params'].ecc,\
@@ -1032,8 +1035,8 @@ class julietPlots(object):
         # -------------------------------------------
         #     Computing detrended data and model
         # -------------------------------------------
-        self.detrend_data(phmin=phmin, instruments=instruments)
-        self.detrend_model(instruments=instruments, phmin=phmin, highres=highres)
+        self.detrend_data(phmin=phmin, instruments=instruments, planet=planet)
+        self.detrend_model(instruments=instruments, phmin=phmin, highres=highres, planet=planet)
 
         # -------------------------------------------
         #           Type of fitting
