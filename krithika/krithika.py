@@ -1013,7 +1013,11 @@ class julietPlots(object):
         ### a/R*
         if 'rho' in self.res.model_parameters:
             ### This would mean that we have fitted for rho. We can convert rho to a/*
-            ar = rho_to_ar(np.nanmedian(self.res.posteriors['posterior_samples']['rho']), per)
+            try:
+                rho = np.nanmedian(self.res.posteriors['posterior_samples']['rho'])
+                ar = rho_to_ar(rho, per)
+            except:
+                ar = self.all_mods_ins[instruments[0]]['params'].a
         else:
             ### That means that we directly fit for a/R*
             try:
