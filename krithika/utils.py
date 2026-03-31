@@ -739,6 +739,34 @@ class BrightnessTemperatureCalculator:
             trans_fun = trans_fun / np.max(trans_fun)
         self.trans_fun = trans_fun
 
+    def forward_model(self, temp_pl):
+        """Forward model to compute planet/star flux ratio for given planet brightness temperature.
+
+        Parameters
+        ----------
+        temp_pl : float or array-like
+            Planet brightness temperature(s) in Kelvin.
+
+        Returns
+        -------
+        float or ndarray
+            Planet/star flux ratio. Returns a scalar for scalar inputs, otherwise an
+            array with the broadcasted input shape.
+        """
+        temp_arr = np.asarray(temp_pl, dtype=float)
+        rprs_arr = np.asarray(self.rprs, dtype=float)
+        temp_b, rprs_b = np.broadcast_arrays(temp_arr, rprs_arr)
+
+        star_den = simpson(y=self.fl_star.value * self.trans_fun, x=self.wav_star.value)
+        fp_pl = np.empty(temp_b.shape, dtype=float)
+
+        for idx in np.ndindex(temp_b.shape):
+            planet_bb = planck_func(self.wav_star, temp_b[idx] * u.K)
+            planet_den = simpson(y=planet_bb.value * self.trans_fun, x=self.wav_star.value)
+            fp_pl[idx] = planet_den * (rprs_b[idx]**2) / star_den
+
+        return float(fp_pl) if fp_pl.ndim == 0 else fp_pl
+
     def _solve_single(self, ecl_dep, rprs_ratio):
         """Compute brightness temperature for a single eclipse depth."""
         # scaled fp for integration comparison
